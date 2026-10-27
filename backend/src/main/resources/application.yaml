@@ -1,0 +1,15 @@
+spring:
+  application:
+    name: hookflow-backend
+
+management: # 配置 Actuator 管理功能。
+  endpoints: # 配置管理端点的暴露范围。
+    web: # 以下规则只针对 HTTP 访问。
+      exposure: # 指定允许通过 HTTP 访问的端点。
+        include: health # 仅暴露健康检查，不暴露其他管理端点。
+  endpoint: # 配置单个管理端点的响应。
+    health: # 以下设置只作用于健康检查。
+      probes: # 配置存活和就绪探针分组。
+        enabled: false # 当前阶段不暴露这两个额外的健康检查分组。
+      show-details: never # 不返回内部健康检查的详细信息。
+      show-components: never # 不列出数据库等内部组件。

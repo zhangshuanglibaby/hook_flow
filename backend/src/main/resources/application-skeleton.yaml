@@ -1,0 +1,10 @@
+# 仅在启用 skeleton 配置组时，用于验证 P1-01 的无数据库工程骨架。
+spring:
+  # 配置 Spring Boot 的自动配置行为。
+  autoconfigure:
+    # 列出此配置组暂时不启用的自动配置。
+    exclude:
+      # P1-02 尚未配置数据库连接，因此暂时不创建数据源。
+      - org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration
+      # P1-03 尚未创建数据库迁移，因此暂时不运行 Flyway。
+      - org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration
