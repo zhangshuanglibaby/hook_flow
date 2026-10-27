@@ -94,6 +94,22 @@
 			<artifactId>spring-boot-starter-webmvc-test</artifactId>
 			<scope>test</scope>
 		</dependency>
+		<!-- 仅在测试时启动一次性 MySQL 容器，验证真实的 Flyway 迁移。 -->
+		<dependency>
+			<!-- Testcontainers 官方 MySQL 模块。 -->
+			<groupId>org.testcontainers</groupId>
+			<artifactId>testcontainers-mysql</artifactId>
+			<!-- 不进入正式应用的运行依赖。 -->
+			<scope>test</scope>
+		</dependency>
+		<!-- 让 JUnit Jupiter 管理测试容器的启动与关闭。 -->
+		<dependency>
+			<!-- Testcontainers 官方 JUnit Jupiter 集成模块。 -->
+			<groupId>org.testcontainers</groupId>
+			<artifactId>testcontainers-junit-jupiter</artifactId>
+			<!-- 不进入正式应用的运行依赖。 -->
+			<scope>test</scope>
+		</dependency>
 	</dependencies>
 
 	<build>
