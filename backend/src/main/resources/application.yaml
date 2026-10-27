@@ -30,3 +30,8 @@ management: # 配置 Actuator 管理功能。
         enabled: false # 当前阶段不暴露这两个额外的健康检查分组。
       show-details: never # 不返回内部健康检查的详细信息。
       show-components: never # 不列出数据库等内部组件。
+
+logging: # 配置应用日志输出。
+  structured: # 使用 Spring Boot 内置的结构化日志功能。
+    format: # 指定日志的输出格式。
+      console: logstash # 控制台每条日志输出为 JSON；MDC 中的 requestId 会成为 JSON 字段。
