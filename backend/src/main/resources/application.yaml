@@ -1,6 +1,23 @@
 spring:
   application:
     name: hookflow-backend
+  datasource: # Spring Boot 的数据库连接配置，仍属于上方的 spring 节点。
+    url: "${DB_URL}" # 从环境变量读取 JDBC 地址；不提供仓库内默认地址。
+    username: "${DB_USERNAME}" # 从环境变量读取数据库用户名。
+    password: "${DB_PASSWORD}" # 从环境变量读取数据库密码。
+
+hookflow: # HookFlow 自有配置；后续步骤会实现读取和校验。
+  admin: # 首次初始化管理员所需的配置。
+    username: "${HOOKFLOW_ADMIN_USERNAME}" # 从环境变量读取初始管理员用户名。
+    password: "${HOOKFLOW_ADMIN_PASSWORD}" # 从环境变量读取初始管理员密码。
+  security: # 应用敏感配置。
+    secret-encryption-key: "${HOOKFLOW_SECRET_ENCRYPTION_KEY}" # 从环境变量读取加密主密钥。
+  redis: # 可选的任务唤醒配置；Redis 不是任务事实来源。
+    host: "${REDIS_HOST:localhost}" # 未设置时采用本机地址；目前尚未连接 Redis。
+    port: "${REDIS_PORT:6379}" # 未设置时采用默认端口；目前尚未连接 Redis。
+  delivery: # 新建投递任务时要使用的策略配置。
+    max-attempts: "${HOOKFLOW_MAX_ATTEMPTS:3}" # 未设置时每轮最多尝试 3 次。
+    retry-delays: "${HOOKFLOW_RETRY_DELAYS:10s,30s}" # 未设置时采用两档 10 秒、30 秒间隔。
 
 management: # 配置 Actuator 管理功能。
   endpoints: # 配置管理端点的暴露范围。

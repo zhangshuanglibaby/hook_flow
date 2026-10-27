@@ -1,0 +1,2 @@
+# 在 Spring Boot 准备启动环境时注册 HookFlow 的必填变量校验器。
+org.springframework.boot.EnvironmentPostProcessor=com.hookflow.config.RequiredEnvironmentValidator
