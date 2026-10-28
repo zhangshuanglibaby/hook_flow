@@ -70,6 +70,7 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler { // 复
             case 400 -> new ApiError("INVALID_REQUEST", "请求参数不合法", requestId); // 请求字段、类型或 JSON 不合法。
             case 401 -> new ApiError("UNAUTHORIZED", "用户名或密码错误", requestId); // 登录失败不区分账号不存在与密码错误。
             case 404 -> new ApiError("NOT_FOUND", "请求的资源不存在", requestId); // 请求的资源不存在。
+            case 409 -> new ApiError("CONFLICT", "请求与现有记录冲突", requestId); // 同 ID 内容不同；保留本次请求的关联 ID。
             case 405 -> new ApiError("METHOD_NOT_ALLOWED", "请求方法不被允许", requestId); // HTTP 方法不适用。
             case 415 -> new ApiError("UNSUPPORTED_MEDIA_TYPE", "请求内容类型不被支持", requestId); // 请求的媒体类型不适用。
             default -> status.is5xxServerError() // 其他服务端错误同样不暴露内部细节。
