@@ -18,17 +18,67 @@ import com.hookflow.config.RequestIdFilter; // 使用服务端请求 ID 的属�
 import com.hookflow.endpoint.application.EndpointQueryService; // 调用接收端查询服务。
 import com.hookflow.endpoint.application.EndpointUpdateService; // 调用接收端编辑事务服务。
 import com.hookflow.endpoint.domain.EndpointConfiguration; // 将内部配置映射为安全响应。
+import org.springframework.http.HttpHeaders; // 设置一次性创建响应不被缓存。
+import org.springframework.http.ResponseEntity; // 同时指定创建状态、响应头和响应体。
+import org.springframework.web.bind.annotation.PostMapping; // 注册管理员创建接口。
+import com.hookflow.endpoint.application.EndpointSecretProvisioningService; // 调用加密入库及审计的创建服务。
+import com.hookflow.endpoint.domain.EndpointTargetType; // 区分 EXTERNAL 与 SIMULATOR。
 
 @Profile("!skeleton") // 无数据库配置不注册接收端接口。
 @RestController // 交由 Spring MVC 处理管理员 HTTP 请求。
 public class EndpointController { // 提供列表、详情和当前安全范围内的编辑接口。
     private final EndpointQueryService queries; // 保存查询应用服务。
     private final EndpointUpdateService updates; // 保存编辑应用服务。
+    private final EndpointSecretProvisioningService provisioning; // 保存创建、密钥加密和审计服务。
 
-    public EndpointController(EndpointQueryService queries, EndpointUpdateService updates) { // 由 Spring 注入两个应用服务。
+    public EndpointController(EndpointQueryService queries, EndpointUpdateService updates,
+            EndpointSecretProvisioningService provisioning) { // 由 Spring 注入三个应用服务。
         this.queries = queries; // 保存服务供 GET 接口使用。
         this.updates = updates; // 保存服务供 PATCH 接口使用。
+        this.provisioning = provisioning; // 保存服务供 POST 接口使用。
     } // 构造方法结束。
+
+
+    @PostMapping(path = "/api/v1/admin/endpoints", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE) // 注册管理员创建接口。
+    public ResponseEntity<?> create(@RequestBody Map<String, Object> body, Principal principal, HttpServletRequest request) { // 接收 JSON、管理员身份和服务端请求 ID。
+        if (body == null || body.keySet().stream().anyMatch(key -> // 请求必须是对象，且只能含契约允许的字段。
+                !key.equals("name") && !key.equals("targetType") && !key.equals("url")
+                        && !key.equals("timeoutMs") && !key.equals("enabled"))) { // 未知字段一律拒绝。
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST); // 避免拼错字段后静默创建。
+        } // 请求字段集合检查结束。
+        String name = EndpointInputValidation.name(body.get("name")); // 必填名称缺失、空白或类型错误均返回 400。
+        EndpointTargetType targetType = EndpointInputValidation.targetType(body.get("targetType")); // 只接受精确的两种目标类型。
+        int timeoutMs = body.containsKey("timeoutMs") // 可选超时由接口契约提供默认值。
+                ? EndpointInputValidation.timeoutMs(body.get("timeoutMs")) // 显式提供时严格检查整数和范围。
+                : 5000; // 未提供时默认 5000 毫秒。
+        boolean enabled = true; // 未提供启用状态时默认启用。
+        if (body.containsKey("enabled")) { // 显式提供时不能把字符串或 null 当作布尔值。
+            if (!(body.get("enabled") instanceof Boolean requestedEnabled)) { // 只接受 JSON true 或 false。
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST); // 错误类型不进入创建事务。
+            } // 启用状态类型检查结束。
+            enabled = requestedEnabled; // 保存管理员明确指定的布尔值。
+        } // 可选启用状态处理结束。
+        String url = null; // SIMULATOR 没有用户 URL。
+        if (targetType == EndpointTargetType.EXTERNAL) { // EXTERNAL 必须提供可保存的公开 HTTPS 地址。
+            url = ExternalUrlValidation.validate(body.get("url")); // 格式错误返回 400，禁止目标返回 422。
+        } else if (body.containsKey("url")) { // SIMULATOR 即使传入 null 也属于提供了 URL 字段。
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST); // 禁止借模拟器创建绕过外部 URL 安全策略。
+        } // 目标类型与 URL 的对应关系检查结束。
+        long actorUserId = Long.parseLong(principal.getName()); // 使用安全过滤器认证的管理员数据库 ID。
+        String requestId = (String) request.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE); // 只使用服务端生成的请求 ID。
+        if (targetType == EndpointTargetType.EXTERNAL) { // 外部接收端成功创建才交付一次性明文密钥。
+            EndpointSecretProvisioningService.CreatedExternalEndpoint created = provisioning.createExternal( // 开启加密入库及同事务审计。
+                    name, url, timeoutMs, enabled, actorUserId, requestId // 传入已校验的请求字段和可信身份。
+            ); // 事务成功提交后才取得创建结果。
+            return ResponseEntity.status(HttpStatus.CREATED) // 成功新建返回 201。
+                    .header(HttpHeaders.CACHE_CONTROL, "no-store") // 禁止缓存含一次性密钥的响应。
+                    .body(ExternalEndpointCreationView.of(toView(created.configuration()), created.signingSecret())); // 只在此次响应附加明文密钥。
+        } // EXTERNAL 响应结束。
+        EndpointConfiguration created = provisioning.createSimulator(name, timeoutMs, enabled, actorUserId, requestId); // 固定内部目标并同事务审计。
+        return ResponseEntity.status(HttpStatus.CREATED) // 模拟器新建同样返回 201。
+                .header(HttpHeaders.CACHE_CONTROL, "no-store") // 创建响应不由缓存复用。
+                .body(toView(created)); // 模拟器响应只含普通安全字段，没有密钥。
+    } // 管理员创建接口结束。
 
     @GetMapping(path = "/api/v1/admin/endpoints", produces = MediaType.APPLICATION_JSON_VALUE) // 注册管理员接收端列表。
     public EndpointPageView list(@RequestParam(required = false) String page, @RequestParam(required = false) String size) { // 接收可选页码和条数。

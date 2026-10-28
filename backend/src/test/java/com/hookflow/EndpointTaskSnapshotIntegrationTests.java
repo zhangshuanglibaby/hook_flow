@@ -63,6 +63,37 @@ class EndpointTaskSnapshotIntegrationTests { // 只测试应用服务与数据�
         } // 关闭应用；JUnit 负责清理数据库容器。
     } // 快照编辑集成测试结束。
 
+    @Test // 验证 EXTERNAL 创建后编辑 URL 不会改写已经取得的任务快照。
+    void keepsExternalUrlSnapshotAfterEdit() { // 使用真实 MySQL 和应用服务，不创建投递任务。
+        try (ConfigurableApplicationContext context = start()) { // 测试结束时关闭应用上下文。
+            JdbcTemplate jdbc = context.getBean(JdbcTemplate.class); // 读取临时 MySQL 中的配置和审计。
+            EndpointSecretProvisioningService provisioning = context.getBean(EndpointSecretProvisioningService.class); // 创建已校验并加密的 EXTERNAL。
+            EndpointTaskSnapshotService snapshots = context.getBean(EndpointTaskSnapshotService.class); // 通过既有持锁入口复制快照。
+            EndpointUpdateService updates = context.getBean(EndpointUpdateService.class); // 调用现有 URL 编辑事务。
+            Long actor = jdbc.queryForObject("SELECT id FROM app_user WHERE username = ?", Long.class, "snapshot-test-admin"); // 使用真实管理员 ID。
+            EndpointSecretProvisioningService.CreatedExternalEndpoint created = provisioning.createExternal( // 由正式创建服务保存公开 HTTPS 目标。
+                    "snapshot-external", "https://hooks.acme.com/before", 5000, true, actor, UUID.randomUUID().toString()); // 不使用直接 SQL 夹具。
+            long endpointId = created.configuration().id(); // 保存数据库分配的接收端 ID。
+            TransactionTemplate transaction = new TransactionTemplate(context.getBean(PlatformTransactionManager.class)); // 模拟未来任务创建方的短事务。
+            transaction.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED); // 与既有锁定快照约定一致。
+            EndpointTaskSnapshot before = transaction.execute(status -> snapshots.lockEnabledSnapshot(endpointId).orElseThrow()); // 保存编辑前的独立内存快照。
+            byte[] originalCiphertext = before.secretCiphertextSnapshot(); // 保存快照密文的防御性副本。
+            EndpointConfiguration updated = updates.update( // 只修改 URL，不修改名称、超时和密钥。
+                    endpointId, null, "https://hooks.acme.com/after", null, actor, UUID.randomUUID().toString()).orElseThrow(); // 编辑与审计在同一事务。
+            assertEquals("https://hooks.acme.com/after", updated.url()); // 正式配置已经改为新目标。
+            EndpointTaskSnapshot after = transaction.execute(status -> snapshots.lockEnabledSnapshot(endpointId).orElseThrow()); // 编辑后新事务读取最新配置。
+            assertEquals("https://hooks.acme.com/before", before.url()); // 已取得的旧快照不能被 URL 编辑改写。
+            assertEquals("https://hooks.acme.com/after", after.url()); // 新快照必须读取编辑后的 URL。
+            assertEquals(5000, before.timeoutMs()); // URL 编辑不改变旧快照超时。
+            assertEquals(5000, after.timeoutMs()); // 新快照仍沿用原超时。
+            assertArrayEquals(originalCiphertext, before.secretCiphertextSnapshot()); // 旧快照密文保持原值。
+            assertArrayEquals(originalCiphertext, after.secretCiphertextSnapshot()); // 编辑 URL 不会轮换接收端密钥。
+            assertEquals(1L, jdbc.queryForObject("SELECT COUNT(*) FROM audit_log WHERE action = 'ENDPOINT_UPDATED' AND object_id = ?", // URL 编辑产生唯一成功审计。
+                    Long.class, Long.toString(endpointId))); // 审计对象为此次创建的接收端。
+            assertEquals(0L, jdbc.queryForObject("SELECT COUNT(*) FROM delivery_task", Long.class)); // 此处没有实现事件或任务持久化。
+        } // 关闭测试应用。
+    } // EXTERNAL URL 快照隔离测试结束。
+
     @Test // 验证停用状态及损坏密文在真实数据库上的失败路径。
     void rejectsDisabledEndpointAndDamagedStoredCiphertext() { // 只在临时测试数据库中故意修改状态和密文。
         try (ConfigurableApplicationContext context = start()) { // 启动完整应用并确保关闭。
