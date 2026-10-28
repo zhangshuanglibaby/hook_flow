@@ -15,6 +15,8 @@ import org.springframework.stereotype.Service; // 将应用服务注册为 Sprin
 import org.springframework.transaction.annotation.Isolation; // 指定轮换事务的隔离级别。
 import org.springframework.transaction.annotation.Transactional; // 让撤销和创建处于同一事务。
 import com.hookflow.auth.infrastructure.BusinessApiKeyRepository; // 调用认证模块的数据库访问类。
+import com.hookflow.audit.application.AuditLogService; // 通过审计模块应用服务记录成功轮换。
+import com.hookflow.audit.application.AuditLogService.Action; // 使用固定操作枚举，避免写入任意操作名称。
 
 @Profile("!skeleton") // 正式数据库配置才启用业务 Key 服务。
 @Service // 供后续轮换接口和鉴权过滤器注入。
@@ -23,14 +25,16 @@ public class BusinessApiKeyService { // 实现 P2-03 的轮换及有效性判断
     private final SecureRandom secureRandom = new SecureRandom(); // 使用密码学安全随机数生成器。
     private final BusinessApiKeyRepository keys; // 保存业务 Key 数据库访问组件。
     private final Clock clock; // 保存项目统一的可控 UTC 时钟。
+    private final AuditLogService auditLogs; // 保存参与当前轮换事务的审计服务。
 
-    public BusinessApiKeyService(BusinessApiKeyRepository keys, Clock clock) { // 由 Spring 注入仓库和时钟。
+    public BusinessApiKeyService(BusinessApiKeyRepository keys, Clock clock, AuditLogService auditLogs) { // 由 Spring 注入仓库、时钟和审计服务。
         this.keys = keys; // 保存仓库，供轮换和校验使用。
-        this.clock = clock; // 保存时钟，避免直接依赖机器本地时间。
+        this.clock = clock; // 保存时钟，避免依赖机器本地时间。
+        this.auditLogs = auditLogs; // 保存审计服务，供成功轮换时调用。
     } // 构造方法结束。
 
     @Transactional(isolation = Isolation.READ_COMMITTED) // 从取得行锁到撤销、插入、提交，保持在同一个事务中。
-    public String rotate() { // 返回仅供本次成功响应使用的新 Key 明文。
+    public String rotate(long actorUserId, String requestId) { // 接收已认证管理员内部 ID 和服务端生成的请求 ID。
         keys.lockRotationGuard(); // 锁定固定管理员行，使首次及后续并发轮换串行执行。
         LocalDateTime now = LocalDateTime.ofInstant( // 构造数据库使用的 UTC 时间。
                 clock.instant().truncatedTo(ChronoUnit.MILLIS), // 与 DATETIME(3) 的毫秒精度一致。
@@ -41,6 +45,7 @@ public class BusinessApiKeyService { // 实现 P2-03 的轮换及有效性判断
         String apiKey = Base64.getUrlEncoder().withoutPadding().encodeToString(randomBytes); // 编码为可放入业务请求头的明文。
         keys.revokeActive(now); // 在同一事务内撤销此前所有有效业务 Key。
         keys.create(sha256(apiKey), now); // 只把新 Key 的摘要和创建时间写入数据库。
+        auditLogs.recordSuccess(actorUserId, Action.API_KEY_ROTATED, 1L, now, requestId); // 复用轮换事务已取得的 UTC 毫秒时间，审计与 Key 变更一起提交。
         return apiKey; // 事务成功提交后，调用方才会取得此明文并生成响应。
     } // 轮换方法结束；异常会使撤销和插入一起回滚。
 

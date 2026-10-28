@@ -18,6 +18,12 @@ import java.util.concurrent.Executors; // 创建固定数量的工作线程。
 import java.util.concurrent.Future; // 等待每个 HTTP 请求的结果。
 import java.util.concurrent.TimeUnit; // 为等待设置明确超时。
 
+import java.time.Clock; // 读取应用实际注入的 UTC 时钟。
+import java.time.LocalDateTime; // 比较数据库审计时间与请求执行时间。
+import java.time.ZoneOffset; // 将时钟读数明确转换为 UTC。
+import java.time.temporal.ChronoUnit; // 与数据库 DATETIME(3) 的毫秒精度对齐。
+import java.util.Map; // 接收审计行的字段名和值。
+
 import org.junit.jupiter.api.Test; // 标记集成测试方法。
 import org.springframework.boot.builder.SpringApplicationBuilder; // 启动完整应用。
 import org.springframework.context.ConfigurableApplicationContext; // 测试结束时关闭应用。
@@ -28,6 +34,11 @@ import org.testcontainers.mysql.MySQLContainer; // 使用真实 MySQL 8.4.13。
 
 import tools.jackson.databind.JsonNode; // 结构化读取 JSON 响应。
 import tools.jackson.databind.json.JsonMapper; // 使用应用实际的 JSON 映射器。
+
+import static org.junit.jupiter.api.Assertions.assertThrows; // 验证审计插入失败会向调用方抛出异常。
+import java.util.UUID; // 为直接调用应用服务生成测试请求 ID。
+import org.springframework.dao.DataIntegrityViolationException; // 识别审计操作者外键约束失败。
+import com.hookflow.auth.application.BusinessApiKeyService; // 通过真实 Spring 事务代理调用轮换服务。
 
 @Testcontainers // 测试运行时启动临时 MySQL，并在结束后清理。
 class BusinessApiKeyHttpIntegrationTests { // 验证 P2-03 的实际 HTTP 和数据库行为。
@@ -44,18 +55,44 @@ class BusinessApiKeyHttpIntegrationTests { // 验证 P2-03 的实际 HTTP 和数
 
             HttpResponse<String> noAdmin = post(client, uri(context, "/api/v1/admin/api-key/rotate"), null, null, null); // 无管理员 Token 尝试轮换。
             assertSecurityError(mapper, noAdmin, 401, "UNAUTHORIZED"); // 未认证请求不得签发业务 Key。
+            assertEquals(Long.valueOf(0), jdbc.queryForObject("SELECT COUNT(*) FROM audit_log WHERE request_id = ?", Long.class, noAdmin.headers().firstValue("X-Request-Id").orElseThrow())); // 未登录的轮换请求不能产生成功审计。
 
             HttpResponse<String> login = post(client, uri(context, "/api/v1/auth/login"), null, null,
                     "{\"username\":\"key-test-admin\",\"password\":\"key-test-password\"}"); // 使用测试专用账户登录。
             assertEquals(200, login.statusCode()); // 正确的测试账户应登录成功。
             String adminToken = mapper.readTree(login.body()).path("token").asString(); // 仅在测试内存中保存管理员 Token。
-
+            
+            LocalDateTime beforeFirstRotation = LocalDateTime.ofInstant(context.getBean(Clock.class).instant().truncatedTo(ChronoUnit.MILLIS), ZoneOffset.UTC); // 记录首次请求开始前的 UTC 毫秒时间。
+            
             HttpResponse<String> first = post(client, uri(context, "/api/v1/admin/api-key/rotate"), adminToken, null, null); // 管理员首次轮换业务 Key。
+            
+            LocalDateTime afterFirstRotation = LocalDateTime.ofInstant(context.getBean(Clock.class).instant().truncatedTo(ChronoUnit.MILLIS), ZoneOffset.UTC); // 记录首次响应返回后的 UTC 毫秒时间。
+
             assertEquals(200, first.statusCode()); // 首次轮换应成功。
             JsonNode firstBody = mapper.readTree(first.body()); // 结构化读取本次轮换响应。
             assertEquals(1, firstBody.size()); // 成功响应只能包含 apiKey 一个字段。
             String firstKey = firstBody.path("apiKey").asString(); // 仅在测试内存中保存首次签发的 Key。
             assertEquals(43, firstKey.length()); // 32 字节随机值的无填充 URL 安全编码为 43 字符。
+
+            String firstRequestId = first.headers().firstValue("X-Request-Id").orElse(""); // 从成功响应读取服务端生成的请求 ID。
+            assertFalse(firstRequestId.isBlank()); // 成功响应必须带有可关联的请求 ID。
+            Map<String, Object> firstAudit = jdbc.queryForMap("SELECT actor_user_id, action, object_type, object_id, occurred_at, request_id FROM audit_log WHERE request_id = ?", firstRequestId); // 按本次请求 ID 查询真实 MySQL 中唯一的审计行。
+            Long expectedActorId = jdbc.queryForObject("SELECT id FROM app_user WHERE username = ?", Long.class, "key-test-admin"); // 从数据库取得实际登录管理员的内部 ID。
+            assertEquals(expectedActorId.longValue(), ((Number) firstAudit.get("actor_user_id")).longValue()); // 审计操作者必须是本次登录的管理员。
+            assertEquals("API_KEY_ROTATED", firstAudit.get("action")); // 审计操作必须是业务 Key 轮换。
+            assertEquals("BUSINESS_API_KEY", firstAudit.get("object_type")); // 被操作对象采用约定的业务 Key 类型。
+            assertEquals("1", firstAudit.get("object_id")); // 对象 ID 为约定的单一业务 Key 逻辑槽位。
+            assertEquals(firstRequestId, firstAudit.get("request_id")); // 数据库请求 ID 必须与 HTTP 响应头一致。
+            LocalDateTime auditTime = jdbc.queryForObject("SELECT occurred_at FROM audit_log WHERE request_id = ?", (rs, rowNum) -> rs.getTimestamp(1).toLocalDateTime(), firstRequestId); // 以数据库时间字段读取审计发生时刻。
+            LocalDateTime keyCreatedAt = jdbc.queryForObject("SELECT created_at FROM api_key WHERE revoked_at IS NULL", (rs, rowNum) -> rs.getTimestamp(1).toLocalDateTime()); // 读取首次轮换创建的新 Key 的 UTC 数据库时间。
+            assertEquals(keyCreatedAt, auditTime); // Key 创建与成功审计必须复用同一事务取得的毫秒时间。
+            assertFalse(auditTime.isBefore(beforeFirstRotation)); // 审计时间不得早于请求开始前。
+            assertFalse(auditTime.isAfter(afterFirstRotation)); // 审计时间不得晚于响应返回后。
+            String auditText = firstAudit.toString(); // 汇集本条审计行的字段值，仅用于测试敏感值检查。
+            assertFalse(auditText.contains(firstKey)); // 审计行不得保存明文业务 Key。
+            assertFalse(auditText.contains(adminToken)); // 审计行不得保存管理员 Token。
+            assertFalse(auditText.contains("key-test-password")); // 审计行不得保存测试账户密码。
+            assertFalse(auditText.contains("test-only-placeholder-not-a-real-key")); // 审计行不得保存测试配置中的加密密钥占位值。
 
             byte[] storedHash = jdbc.queryForObject(
                     "SELECT key_hash FROM api_key WHERE revoked_at IS NULL",
@@ -75,7 +112,8 @@ class BusinessApiKeyHttpIntegrationTests { // 验证 P2-03 的实际 HTTP 和数
 
             HttpResponse<String> businessInAdmin = post(client, uri(context, "/api/v1/admin/api-key/rotate"), null, firstKey, null); // 用已验证的真实业务身份访问管理员接口。
             assertSecurityError(mapper, businessInAdmin, 403, "FORBIDDEN"); // 已认证的业务身份不能冒充管理员。
-
+            assertEquals(Long.valueOf(0), jdbc.queryForObject("SELECT COUNT(*) FROM audit_log WHERE request_id = ?", Long.class, businessInAdmin.headers().firstValue("X-Request-Id").orElseThrow())); // 业务身份被管理员接口拒绝后不得产生成功审计。   
+            
             HttpResponse<String> adminInBusiness = post(client, uri(context, "/api/v1/events"), adminToken, null, null); // 用有效管理员 Token 访问业务入口。
             assertSecurityError(mapper, adminInBusiness, 403, "FORBIDDEN"); // 已认证的管理员身份不能冒充业务 Key。
 
@@ -116,8 +154,14 @@ class BusinessApiKeyHttpIntegrationTests { // 验证 P2-03 的实际 HTTP 和数
             assertEquals(200, login.statusCode()); // 管理员登录必须成功。
             String adminToken = mapper.readTree(login.body()).path("token").asString(); // Token 只保存在测试内存。
 
+            HttpResponse<String> badBody = post(client, uri(context, "/api/v1/admin/api-key/rotate"), adminToken, null, "{\"unexpected\":true}"); // 已登录管理员提交轮换接口不接受的非空请求体。
+            assertSecurityError(mapper, badBody, 400, "INVALID_REQUEST"); // 请求应在进入轮换事务前被拒绝。
+            assertEquals(Long.valueOf(0), jdbc.queryForObject("SELECT COUNT(*) FROM audit_log WHERE request_id = ?", Long.class, badBody.headers().firstValue("X-Request-Id").orElseThrow())); // 参数错误不得伪造成功审计。
+
             HttpResponse<String> initial = post(client, rotateUri, adminToken, null, null); // 先创建一条有效 Key，供并发轮换撤销。
             assertEquals(200, initial.statusCode()); // 初始轮换必须成功。
+            String initialRequestId = initial.headers().firstValue("X-Request-Id").orElseThrow(); // 取得并发开始前那次成功轮换的服务端请求 ID。
+            assertEquals(Long.valueOf(1), jdbc.queryForObject("SELECT COUNT(*) FROM audit_log WHERE request_id = ? AND action = 'API_KEY_ROTATED'", Long.class, initialRequestId)); // 初始成功轮换必须对应恰好一条成功审计。
             String initialKey = mapper.readTree(initial.body()).path("apiKey").asString(); // 暂存旧 Key 以检查其失效。
 
             ExecutorService workers = Executors.newFixedThreadPool(2); // 创建两个同时发起请求的工作线程。
@@ -148,6 +192,11 @@ class BusinessApiKeyHttpIntegrationTests { // 验证 P2-03 的实际 HTTP 和数
 
             assertEquals(200, first.statusCode()); // 第一个管理员轮换请求必须成功。
             assertEquals(200, second.statusCode()); // 第二个管理员轮换请求也必须成功。
+            String firstRotationRequestId = first.headers().firstValue("X-Request-Id").orElseThrow(); // 取得第一个成功并发请求的服务端请求 ID。
+            String secondRotationRequestId = second.headers().firstValue("X-Request-Id").orElseThrow(); // 取得第二个成功并发请求的服务端请求 ID。
+            assertFalse(firstRotationRequestId.equals(secondRotationRequestId)); // 两个独立请求不能共用同一个请求 ID。
+            assertEquals(Long.valueOf(1), jdbc.queryForObject("SELECT COUNT(*) FROM audit_log WHERE request_id = ? AND action = 'API_KEY_ROTATED'", Long.class, firstRotationRequestId)); // 第一个成功轮换必须提交恰好一条审计。
+            assertEquals(Long.valueOf(1), jdbc.queryForObject("SELECT COUNT(*) FROM audit_log WHERE request_id = ? AND action = 'API_KEY_ROTATED'", Long.class, secondRotationRequestId)); // 第二个成功轮换也必须提交恰好一条审计。
             String firstKey = mapper.readTree(first.body()).path("apiKey").asString(); // 读取第一个成功响应中的 Key。
             String secondKey = mapper.readTree(second.body()).path("apiKey").asString(); // 读取第二个成功响应中的 Key。
             assertTrue(!firstKey.equals(secondKey)); // 两次成功轮换必须签发不同的 Key。
@@ -168,6 +217,24 @@ class BusinessApiKeyHttpIntegrationTests { // 验证 P2-03 的实际 HTTP 和数
             } // 两个并发轮换结果的有效性检查结束。
         } // 关闭完整应用和测试 HTTP 服务。
     } // 并发轮换测试结束。
+
+    @Test // 验证审计数据库写入失败时，整个轮换事务回滚。
+    void auditInsertFailureRollsBackKeyRotation() { // 直接测试应用服务与真实 MySQL 的事务边界。
+        try (ConfigurableApplicationContext context = start()) { // 启动完整应用，结束时关闭上下文。
+            JdbcTemplate jdbc = context.getBean(JdbcTemplate.class); // 使用本次测试的真实 MySQL 连接。
+            BusinessApiKeyService apiKeys = context.getBean(BusinessApiKeyService.class); // 获取带事务代理的轮换应用服务。
+            Long actorId = jdbc.queryForObject("SELECT id FROM app_user WHERE username = ?", Long.class, "key-test-admin"); // 取得存在的管理员内部 ID。
+            String oldKey = apiKeys.rotate(actorId.longValue(), UUID.randomUUID().toString()); // 先成功签发一条有效 Key，作为回滚前状态。
+            Long keyCountBefore = jdbc.queryForObject("SELECT COUNT(*) FROM api_key", Long.class); // 记录失败操作前的 Key 总数。
+            Long auditCountBefore = jdbc.queryForObject("SELECT COUNT(*) FROM audit_log", Long.class); // 记录失败操作前的审计总数。
+            String failedRequestId = UUID.randomUUID().toString(); // 为预期失败的调用准备独立请求 ID。
+            assertThrows(DataIntegrityViolationException.class, () -> apiKeys.rotate(Long.MAX_VALUE, failedRequestId)); // 不存在的操作者触发审计外键失败。
+            assertTrue(apiKeys.isActive(oldKey)); // 原有效 Key 的撤销必须随事务回滚。
+            assertEquals(keyCountBefore, jdbc.queryForObject("SELECT COUNT(*) FROM api_key", Long.class)); // 失败调用插入的新 Key 不能留在数据库。
+            assertEquals(auditCountBefore, jdbc.queryForObject("SELECT COUNT(*) FROM audit_log", Long.class)); // 失败调用不能留下成功审计。
+            assertEquals(Long.valueOf(0), jdbc.queryForObject("SELECT COUNT(*) FROM audit_log WHERE request_id = ?", Long.class, failedRequestId)); // 失败请求 ID 不得关联审计行。
+        } // 关闭测试应用上下文。
+    } // 审计失败回滚测试结束。
 
     private ConfigurableApplicationContext start() { // 用测试专属数据库启动正式应用配置。
         return new SpringApplicationBuilder(HookflowBackendApplication.class).run(
