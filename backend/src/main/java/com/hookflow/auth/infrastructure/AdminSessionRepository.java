@@ -26,4 +26,12 @@ public class AdminSessionRepository { // 负责保存和查询管理员会话。
                 tokenHash, now // 使用哈希和调用方提供的 UTC 当前时间进行参数绑定。
         ).stream().findFirst(); // Token 哈希有唯一约束，至多返回一个管理员 ID。
     } // 有效会话查询结束。
+
+    public boolean revokeByTokenHash(byte[] tokenHash, LocalDateTime revokedAt) { // 按 Token 哈希撤销当前会话，并记录撤销时间。
+        int updatedRows = jdbcTemplate.update( // 执行一次参数化的数据库更新。
+                "UPDATE admin_session SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL", // 只撤销哈希匹配且尚未撤销的会话。
+                revokedAt, tokenHash // 写入调用方提供的 UTC 时间，并继续只使用 Token 哈希。
+        ); // 数据库更新结束。
+        return updatedRows == 1; // 唯一哈希最多对应一条记录，返回是否确实撤销了一条会话。
+    } // 会话撤销方法结束。
 } // 会话数据库访问类结束。

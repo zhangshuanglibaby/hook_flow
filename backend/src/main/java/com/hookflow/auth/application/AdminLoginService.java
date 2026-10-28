@@ -59,6 +59,17 @@ public class AdminLoginService { // 实现 P2-01 的登录和会话有效期校�
         return sessions.findActiveUserId(sha256(token), now); // 只按哈希查询未撤销且尚未到期的会话。
     } // 会话校验结束。
 
+    public void revokeToken(String token) { // 撤销当前管理员使用的 Token。
+        if (token == null || !TOKEN_FORMAT.matcher(token).matches()) { // 防止格式错误的输入进入数据库查询。
+            return; // 正常请求会先经过安全过滤器，这里仍保持服务方法自身的输入防护。
+        } // Token 格式检查结束。
+        LocalDateTime revokedAt = LocalDateTime.ofInstant( // 将统一时钟转换为数据库使用的 UTC 时间。
+                clock.instant().truncatedTo(ChronoUnit.MILLIS), // 截取到数据库 DATETIME(3) 支持的毫秒精度。
+                ZoneOffset.UTC // 明确把撤销时间保存为 UTC。
+        ); // UTC 撤销时间计算结束。
+        sessions.revokeByTokenHash(sha256(token), revokedAt); // 只把 Token 的 SHA-256 哈希交给仓库，不保存明文 Token。
+    } // Token 撤销方法结束。
+
     private static byte[] sha256(String value) { // 将不透明 Token 转换为固定长度的数据库查找值。
         try { // JDK 提供 SHA-256 时正常返回摘要。
             return MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.US_ASCII)); // 对生成的 ASCII Token 计算 32 字节摘要。
