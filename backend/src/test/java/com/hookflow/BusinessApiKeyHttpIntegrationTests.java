@@ -11,6 +11,8 @@ import java.net.http.HttpRequest; // 构造 POST 请求及认证请求头。
 import java.net.http.HttpResponse; // 读取真实 HTTP 响应。
 import java.nio.charset.StandardCharsets; // 按 ASCII 计算 Key 的摘要。
 import java.security.MessageDigest; // 独立计算预期的 SHA-256 摘要。
+import java.security.SecureRandom; // 为每次测试应用启动生成随机主密钥。
+import java.util.Base64; // 把随机密钥编码为配置文本。
 
 import java.util.concurrent.CountDownLatch; // 让两个轮换请求从同一个起点开始。
 import java.util.concurrent.ExecutorService; // 管理并发请求的工作线程。
@@ -92,7 +94,7 @@ class BusinessApiKeyHttpIntegrationTests { // 验证 P2-03 的实际 HTTP 和数
             assertFalse(auditText.contains(firstKey)); // 审计行不得保存明文业务 Key。
             assertFalse(auditText.contains(adminToken)); // 审计行不得保存管理员 Token。
             assertFalse(auditText.contains("key-test-password")); // 审计行不得保存测试账户密码。
-            assertFalse(auditText.contains("test-only-placeholder-not-a-real-key")); // 审计行不得保存测试配置中的加密密钥占位值。
+            assertFalse(auditText.contains(context.getEnvironment().getRequiredProperty("HOOKFLOW_SECRET_ENCRYPTION_KEY"))); // 审计行不得保存本次启动实际使用的主密钥。
 
             byte[] storedHash = jdbc.queryForObject(
                     "SELECT key_hash FROM api_key WHERE revoked_at IS NULL",
@@ -236,17 +238,21 @@ class BusinessApiKeyHttpIntegrationTests { // 验证 P2-03 的实际 HTTP 和数
         } // 关闭测试应用上下文。
     } // 审计失败回滚测试结束。
 
-    private ConfigurableApplicationContext start() { // 用测试专属数据库启动正式应用配置。
-        return new SpringApplicationBuilder(HookflowBackendApplication.class).run(
-                "--spring.profiles.active=p2-login-test", // 启用真实数据库及测试专用端点。
-                "--server.port=0", // 自动选择空闲端口，避免与本机服务冲突。
-                "--DB_URL=" + MYSQL.getJdbcUrl(), // 连接本测试类的临时 MySQL。
-                "--DB_USERNAME=" + MYSQL.getUsername(), // 使用容器提供的用户名。
-                "--DB_PASSWORD=" + MYSQL.getPassword(), // 使用容器提供的密码。
-                "--HOOKFLOW_ADMIN_USERNAME=key-test-admin", // 配置本测试的初始管理员用户名。
-                "--HOOKFLOW_ADMIN_PASSWORD=key-test-password", // 配置本测试的初始管理员密码。
-                "--HOOKFLOW_SECRET_ENCRYPTION_KEY=test-only-placeholder-not-a-real-key"); // 只使用测试占位值，不写入真实密钥。
-    } // 应用启动方法结束。
+    private ConfigurableApplicationContext start() { // 使用测试专属数据库启动完整应用。
+        byte[] keyBytes = new byte[32]; // AES-256 主密钥长度为 32 字节。
+        new SecureRandom().nextBytes(keyBytes); // 生成本次启动专用的随机测试密钥。
+        String startupKey = Base64.getEncoder().encodeToString(keyBytes); // 转换为 Base64 配置值。
+        return new SpringApplicationBuilder(HookflowBackendApplication.class).run( // 启动真实数据库配置的后端。
+                "--spring.profiles.active=p2-login-test", // 启用现有数据库测试配置。
+                "--server.port=0", // 使用随机 HTTP 端口。
+                "--DB_URL=" + MYSQL.getJdbcUrl(), // 连接本测试的 MySQL 容器。
+                "--DB_USERNAME=" + MYSQL.getUsername(), // 使用容器数据库用户名。
+                "--DB_PASSWORD=" + MYSQL.getPassword(), // 使用容器数据库密码。
+                "--HOOKFLOW_ADMIN_USERNAME=key-test-admin", // 设置测试管理员用户名。
+                "--HOOKFLOW_ADMIN_PASSWORD=key-test-password", // 设置测试管理员密码。
+                "--HOOKFLOW_SECRET_ENCRYPTION_KEY=" + startupKey // 只向本次测试进程提供随机主密钥。
+        ); // 完成应用启动。
+    } // 测试启动方法结束。
 
     private URI uri(ConfigurableApplicationContext context, String path) { // 构造本次应用的 HTTP 地址。
         String port = context.getEnvironment().getRequiredProperty("local.server.port"); // 读取应用实际监听的随机端口。

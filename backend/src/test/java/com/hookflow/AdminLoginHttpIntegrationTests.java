@@ -10,6 +10,8 @@ import java.net.http.HttpRequest; // 构造 JSON POST 请求。
 import java.net.http.HttpResponse; // 读取实际 HTTP 响应。
 import java.nio.charset.StandardCharsets; // 按 ASCII 计算 Token 摘要。
 import java.security.MessageDigest; // 独立计算 SHA-256 预期值。
+import java.security.SecureRandom; // 为测试启动生成随机的 32 字节主密钥。
+import java.util.Base64; // 将随机字节编码为配置可读取的文本。
 import java.time.Instant; // 检查响应中的 UTC 到期时间。
 import java.time.LocalDateTime; // 核对数据库保存的 UTC 时间。
 import java.time.ZoneOffset; // 明确数据库时间使用 UTC。
@@ -72,17 +74,21 @@ class AdminLoginHttpIntegrationTests { // 验证 P2-01 的实际启动与 HTTP �
         } // 关闭第二次启动的应用。
     } // 完整登录与重启测试结束。
 
-    private ConfigurableApplicationContext start(String username, String password) { // 用临时数据库和测试专用配置启动正式应用。
-        return new SpringApplicationBuilder(HookflowBackendApplication.class).run( // 通过高优先级命令行参数覆盖本机可能存在的环境变量。
-                "--spring.profiles.active=p2-login-test", // 避免误用无数据库的 skeleton 配置组。
-                "--server.port=0", // 让服务器使用随机空闲端口。
-                "--DB_URL=" + MYSQL.getJdbcUrl(), // 连接本测试独有的 MySQL 容器。
-                "--DB_USERNAME=" + MYSQL.getUsername(), // 使用容器生成的数据库用户名。
-                "--DB_PASSWORD=" + MYSQL.getPassword(), // 使用容器生成的数据库密码。
-                "--HOOKFLOW_ADMIN_USERNAME=" + username, // 指定本次启动的初始管理员用户名。
-                "--HOOKFLOW_ADMIN_PASSWORD=" + password, // 指定本次启动的初始管理员密码。
-                "--HOOKFLOW_SECRET_ENCRYPTION_KEY=test-only-placeholder-not-a-real-key"); // 满足当前启动校验，不写入真实主密钥。
-    } // 应用启动方法结束。
+    private ConfigurableApplicationContext start(String username, String password) { // 使用临时数据库启动完整应用。
+        byte[] keyBytes = new byte[32]; // 准备 AES-256 所需长度的主密钥。
+        new SecureRandom().nextBytes(keyBytes); // 每次启动生成随机测试密钥，不保存固定值。
+        String startupKey = Base64.getEncoder().encodeToString(keyBytes); // 编码为环境配置使用的 Base64。
+        return new SpringApplicationBuilder(HookflowBackendApplication.class).run( // 启动实际后端。
+                "--spring.profiles.active=p2-login-test", // 使用真实数据库测试配置。
+                "--server.port=0", // 由系统分配测试端口。
+                "--DB_URL=" + MYSQL.getJdbcUrl(), // 连接本测试的 MySQL 容器。
+                "--DB_USERNAME=" + MYSQL.getUsername(), // 使用容器数据库用户名。
+                "--DB_PASSWORD=" + MYSQL.getPassword(), // 使用容器数据库密码。
+                "--HOOKFLOW_ADMIN_USERNAME=" + username, // 设置本次启动的初始管理员用户名。
+                "--HOOKFLOW_ADMIN_PASSWORD=" + password, // 设置本次启动的初始管理员密码。
+                "--HOOKFLOW_SECRET_ENCRYPTION_KEY=" + startupKey // 仅向本次测试进程提供随机主密钥。
+        ); // 完成应用启动。
+    } // 测试启动方法结束。
 
     private URI loginUri(ConfigurableApplicationContext context) { // 查找本次启动实际使用的端口。
         String port = context.getEnvironment().getRequiredProperty("local.server.port"); // 从当前应用上下文读取随机端口。

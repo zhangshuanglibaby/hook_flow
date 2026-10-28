@@ -1,6 +1,7 @@
 package com.hookflow.config; // 将配置校验放在应用级公共包，不归入七个业务模块。
 
 import java.time.Duration; // 用标准时间类型判断延迟是否大于零。
+import java.util.Base64; // 使用标准 Base64 解码并检查主密钥的编码格式。
 import org.springframework.boot.convert.DurationStyle; // 按 Spring Boot 支持的 10s 等格式解析时长。
 import org.springframework.boot.EnvironmentPostProcessor; // 在应用上下文刷新前检查环境配置。
 import org.springframework.boot.SpringApplication; // 接收当前启动的 Spring Boot 应用。
@@ -30,6 +31,16 @@ public final class RequiredEnvironmentValidator implements EnvironmentPostProces
                 throw new IllegalStateException("配置错误：必需环境变量 " + name + " 缺失或为空"); // 只报告变量名，不泄露其值。
             } // 单项检查结束。
         } // 全部必填变量检查结束。
+            String encodedKey = environment.getRequiredProperty("HOOKFLOW_SECRET_ENCRYPTION_KEY"); // 读取已通过非空检查的主密钥，不记录其内容。
+        byte[] keyBytes; // 暂存解码结果，用于检查实际密钥长度。
+        try { // 无法解码的文本必须使应用启动失败。
+            keyBytes = Base64.getDecoder().decode(encodedKey); // 将环境变量中的标准 Base64 文本还原为字节。
+        } catch (IllegalArgumentException exception) { // 捕获非法 Base64，避免在错误信息中输出原始密钥。
+            throw new IllegalStateException("配置错误：HOOKFLOW_SECRET_ENCRYPTION_KEY 必须是 32 字节密钥的标准 Base64 编码"); // 只说明配置要求。
+        } // Base64 解码检查结束。
+        if (keyBytes.length != 32 || !Base64.getEncoder().encodeToString(keyBytes).equals(encodedKey)) { // 同时拒绝长度错误和非规范编码。
+            throw new IllegalStateException("配置错误：HOOKFLOW_SECRET_ENCRYPTION_KEY 必须是 32 字节密钥的标准 Base64 编码"); // 不允许以无效密钥继续启动。
+        } // 主密钥格式检查结束。
         String rawMaxAttempts = environment.getProperty("hookflow.delivery.max-attempts", "3"); // 读取 YAML 中最终生效的尝试次数，未配置时用 3。
         int maxAttempts; // 保存解析后的整数，供范围检查使用。
         try { // 将配置文本转换为整数。

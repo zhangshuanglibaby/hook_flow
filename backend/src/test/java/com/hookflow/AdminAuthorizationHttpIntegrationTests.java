@@ -7,6 +7,8 @@ import java.net.URI; // 构造随机端口上的 HTTP 地址。
 import java.net.http.HttpClient; // 发送真实 HTTP 请求。
 import java.net.http.HttpRequest; // 构造 HTTP 请求。
 import java.net.http.HttpResponse; // 读取 HTTP 响应。
+import java.security.SecureRandom; // 为本次测试启动生成随机主密钥。
+import java.util.Base64; // 将随机字节编码为环境配置使用的文本。
 
 import org.junit.jupiter.api.Test; // 标记测试方法。
 import org.springframework.boot.builder.SpringApplicationBuilder; // 启动完整 Spring 应用。
@@ -150,18 +152,21 @@ class AdminAuthorizationHttpIntegrationTests { // 验证管理员 Token 的 HTTP
         } // 关闭应用上下文。
     } // 过期 Token 权限测试结束。
 
-    private ConfigurableApplicationContext start() { // 使用测试容器启动正式数据库配置。
-        return new SpringApplicationBuilder(HookflowBackendApplication.class).run( // 启动完整后端应用。
-                "--spring.profiles.active=p2-login-test", // 启用真实数据库和测试专用 Controller。
-                "--server.port=0", // 让服务器自动选择空闲端口。
-                "--DB_URL=" + MYSQL.getJdbcUrl(), // 连接本测试类自己的 MySQL 容器。
-                "--DB_USERNAME=" + MYSQL.getUsername(), // 使用容器提供的数据库用户名。
-                "--DB_PASSWORD=" + MYSQL.getPassword(), // 使用容器提供的数据库密码。
-                "--HOOKFLOW_ADMIN_USERNAME=boundary-admin", // 配置本测试使用的初始管理员用户名。
-                "--HOOKFLOW_ADMIN_PASSWORD=boundary-password", // 配置本测试使用的初始管理员密码。
-                "--HOOKFLOW_SECRET_ENCRYPTION_KEY=test-only-placeholder-not-a-real-key" // 仅满足启动校验，不写入真实密钥。
-        ); // 应用启动结束。
-    } // 测试应用启动方法结束。
+    private ConfigurableApplicationContext start() { // 使用测试容器启动完整应用。
+    byte[] keyBytes = new byte[32]; // AES-256 主密钥需要 32 字节。
+    new SecureRandom().nextBytes(keyBytes); // 每次启动都生成新的测试密钥，不在仓库固定密钥值。
+    String startupKey = Base64.getEncoder().encodeToString(keyBytes); // 转为可传入启动参数的 Base64 文本。
+    return new SpringApplicationBuilder(HookflowBackendApplication.class).run( // 启动真实数据库配置的后端。
+            "--spring.profiles.active=p2-login-test", // 启用现有数据库测试配置。
+            "--server.port=0", // 使用随机空闲端口。
+            "--DB_URL=" + MYSQL.getJdbcUrl(), // 连接本测试的 MySQL 容器。
+            "--DB_USERNAME=" + MYSQL.getUsername(), // 使用容器提供的用户名。
+            "--DB_PASSWORD=" + MYSQL.getPassword(), // 使用容器提供的密码。
+            "--HOOKFLOW_ADMIN_USERNAME=boundary-admin", // 设置测试管理员用户名。
+            "--HOOKFLOW_ADMIN_PASSWORD=boundary-password", // 设置测试管理员密码。
+            "--HOOKFLOW_SECRET_ENCRYPTION_KEY=" + startupKey // 仅在本次测试进程中提供随机主密钥。
+    ); // 应用启动完成。
+} // 测试启动方法结束。
 
     private URI loginUri(ConfigurableApplicationContext context) { // 构造登录接口地址。
         String port = context.getEnvironment().getRequiredProperty("local.server.port"); // 读取当前应用实际端口。
