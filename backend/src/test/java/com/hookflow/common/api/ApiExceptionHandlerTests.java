@@ -10,6 +10,7 @@ import ch.qos.logback.classic.Logger; // 获取测试期间的日志器。
 import ch.qos.logback.classic.spi.ILoggingEvent; // 读取捕获的日志事件。
 import ch.qos.logback.core.read.ListAppender; // 暂存测试期间产生的日志。
 import com.hookflow.config.RequestIdFilter; // 将真实的请求 ID 过滤器加入测试链。
+import com.hookflow.endpoint.application.EndpointTaskSnapshotService.EndpointDisabledException; // 模拟停用接收端。
 import jakarta.validation.Valid; // 触发请求对象校验。
 import jakarta.validation.constraints.NotBlank; // 定义测试用的非空约束。
 import org.junit.jupiter.api.AfterEach; // 每次测试后释放校验器。
@@ -60,6 +61,18 @@ class ApiExceptionHandlerTests { // 验证过滤器、参数校验和异常映�
         jsonPath("$.requestId").value(requestId).match(result); // 错误体中的 ID 必须与响应头相同。
     } // 400 响应验证结束。
 
+    @Test
+    void disabledEndpointReturns422WithCorrelatedRequestId() throws Exception {
+        MvcResult result = mvc.perform(post("/__test__/endpoint-disabled"))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(jsonPath("$.code").value("ENDPOINT_DISABLED"))
+                .andExpect(jsonPath("$.message").value("接收端已停用，请先启用"))
+                .andReturn();
+        String requestId = result.getResponse().getHeader("X-Request-Id");
+        assertNotNull(requestId);
+        jsonPath("$.requestId").value(requestId).match(result);
+    }
+
     @Test // 验证未知错误的脱敏响应及日志关联。
     void unexpectedFailureReturns500AndCorrelatedSafeLog() throws Exception { // 有效参数进入测试控制器后触发异常。
         Logger logger = (Logger) LoggerFactory.getLogger(ApiExceptionHandler.class); // 获取异常处理器的日志器。
@@ -93,6 +106,11 @@ class ApiExceptionHandlerTests { // 验证过滤器、参数校验和异常映�
 
     @RestController // 仅在这个测试中注册，不属于生产应用。
     public static class ProbeController { // 用同一路由分别触发校验失败和未知异常。
+        @PostMapping("/__test__/endpoint-disabled")
+        public void disabled() {
+            throw new EndpointDisabledException();
+        }
+
         @PostMapping("/__test__/error-probe") // 路径只存在于独立测试环境。
         public void probe(@Valid @RequestBody ProbeInput input) { // 先由 MVC 校验输入。
             throw new IllegalStateException(MARKER); // 校验通过后模拟带虚构敏感内容的内部异常。

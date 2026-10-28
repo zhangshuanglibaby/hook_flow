@@ -15,6 +15,7 @@ import org.springframework.web.context.request.RequestAttributes; // 指定从�
 import org.springframework.web.context.request.WebRequest; // 读取框架传入的请求属性。
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler; // 接管常见 MVC 参数与 JSON 解析异常。
 import com.hookflow.config.RequestIdFilter; // 使用过滤器保存请求 ID 的属性名。
+import com.hookflow.endpoint.application.EndpointTaskSnapshotService.EndpointDisabledException; // 识别事务内发现的接收端停用异常。
 
 @RestControllerAdvice // 将此类注册为返回 JSON 的全局 MVC 异常处理器。
 public class ApiExceptionHandler extends ResponseEntityExceptionHandler { // 复用 Spring MVC 对常见请求异常的分类。
@@ -45,6 +46,16 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler { // 复
         log.info("requestRejected exceptionType={}", exception.getClass().getSimpleName()); // 只记录异常类型，不记录用户名或密码。
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(error(HttpStatus.UNAUTHORIZED, request)); // 使用统一错误体和本次请求 ID。
     } // 登录失败处理结束。
+
+    @ExceptionHandler(EndpointDisabledException.class) // 单独处理接收端停用，不让通用处理器误判为 500。
+    public ResponseEntity<ApiError> handleEndpointDisabled(EndpointDisabledException exception,
+            WebRequest request) { // 使用当前请求构造契约规定的 422 响应。
+        log.info("requestRejected exceptionType={}", exception.getClass().getSimpleName()); // 只记录异常类型，不输出请求内容。
+        ApiError base = error(HttpStatus.UNPROCESSABLE_ENTITY, request); // 取得当前请求的 requestId。
+        ApiError body = new ApiError("ENDPOINT_DISABLED", "接收端已停用，请先启用",
+                base.requestId()); // 使用约定的错误码和固定文案，保留 requestId。
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(body); // 返回 HTTP 422 和统一错误体。
+    } // 接收端停用处理结束。
 
     @ExceptionHandler(Exception.class) // 兜住未分类的控制器异常。
     public ResponseEntity<ApiError> handleUnexpected(Exception exception, WebRequest request) { // 将未知服务端错误映射为 500。
