@@ -50,20 +50,21 @@ public class EndpointController { // 提供列表、详情和当前安全范围�
         return toView(configuration); // 只返回不含签名密钥的详情。
     } // 详情接口结束。
 
-    @PatchMapping(path = "/api/v1/admin/endpoints/{id}", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE) // 注册管理员接收端编辑。
-    public EndpointView update(@PathVariable String id, @RequestBody Map<String, Object> body, Principal principal, HttpServletRequest request) { // 接收路径 ID、JSON、管理员身份和当前请求。
+    @PatchMapping(path = "/api/v1/admin/endpoints/{id}", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE) // 注册管理员接收端编辑接口。
+    public EndpointView update(@PathVariable String id, @RequestBody Map<String, Object> body, Principal principal, HttpServletRequest request) { // 接收路径 ID、JSON、管理员身份和请求信息。
         long endpointId = positiveLong(id); // 在访问数据库前校验路径 ID。
-        if (body == null || body.isEmpty() || body.keySet().stream().anyMatch(key -> !key.equals("name") && !key.equals("timeoutMs"))) { // 只接受非空的名称和超时字段集合。
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST); // 拒绝 URL、类型、启停、密钥及其他未经支持的字段。
+        if (body == null || body.isEmpty() || body.keySet().stream().anyMatch(key -> !key.equals("name") && !key.equals("url") && !key.equals("timeoutMs"))) { // 只接受至少一个允许编辑的字段。
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST); // 拒绝类型、启停、密钥及其他未知字段。
         } // 可编辑字段检查结束。
-        String name = body.containsKey("name") ? EndpointInputValidation.name(body.get("name")) : null; // 字段出现时严格校验，缺省则保留原名称。
-        Integer timeoutMs = body.containsKey("timeoutMs") ? EndpointInputValidation.timeoutMs(body.get("timeoutMs")) : null; // 字段出现时严格校验，缺省则保留原超时。
-        long actorUserId = Long.parseLong(principal.getName()); // 管理员过滤器已将数据库用户 ID 设置为身份名称。
-        String requestId = (String) request.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE); // 只读取服务端生成的请求 ID。
-        EndpointConfiguration configuration = updates.update(endpointId, name, timeoutMs, actorUserId, requestId) // 在一个事务中编辑并记录成功审计。
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND)); // 接收端不存在时不写成功审计。
-        return toView(configuration); // 返回数据库更新后的非敏感详情。
-    } // 当前安全范围内的编辑接口结束。
+        String name = body.containsKey("name") ? EndpointInputValidation.name(body.get("name")) : null; // 出现名称时校验；缺省表示保留原值。
+        String url = body.containsKey("url") ? ExternalUrlValidation.validate(body.get("url")) : null; // 出现 URL 时先校验；显式 null 会被拒绝。
+        Integer timeoutMs = body.containsKey("timeoutMs") ? EndpointInputValidation.timeoutMs(body.get("timeoutMs")) : null; // 出现超时时校验整数范围。
+        long actorUserId = Long.parseLong(principal.getName()); // 管理员过滤器提供数据库用户 ID。
+        String requestId = (String) request.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE); // 只使用服务端生成的请求 ID。
+        EndpointConfiguration configuration = updates.update(endpointId, name, url, timeoutMs, actorUserId, requestId) // 在事务内复查 URL、更新配置并写成功审计。
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND)); // 接收端不存在时返回 404。
+        return toView(configuration); // 响应仍不包含签名密钥。
+    } // 接收端编辑接口结束。
 
     private static int positiveInt(String value) { // 校验分页参数为十进制正整数。
         if (!value.matches("[1-9][0-9]*")) { // 拒绝空值、负数、小数和其他字符。

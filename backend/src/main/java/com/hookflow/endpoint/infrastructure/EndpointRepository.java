@@ -45,12 +45,12 @@ public class EndpointRepository { // 集中管理接收端配置的 JDBC 查询�
                 .stream().findFirst(); // 接收端不存在时返回空结果。
     } // 接收端锁定读取结束。
 
-    public int updateNameAndTimeout(long id, String name, int timeoutMs, LocalDateTime updatedAt) { // 仅更新允许独立处理的两个配置字段。
-        return jdbcTemplate.update( // 返回实际受影响的行数，供应用服务核对。
-                "UPDATE endpoint SET name = ?, timeout_ms = ?, updated_at = ? WHERE id = ?", // 不修改 URL、类型、启停状态或签名密文。
-                name, timeoutMs, updatedAt, id // 使用 SQL 参数绑定，避免拼接输入。
-        ); // 接收端字段更新结束。
-    } // 名称和超时更新方法结束。
+    public int updateConfiguration(long id, String name, String url, int timeoutMs, LocalDateTime updatedAt) { // 接收事务服务确定的名称、URL、超时及修改时间。
+        return jdbcTemplate.update( // 返回实际更新行数，供调用方检查。
+                "UPDATE endpoint SET name = ?, url = ?, timeout_ms = ?, updated_at = ? WHERE id = ?", // 只更新配置，不改类型、启停状态或签名密文。
+                name, url, timeoutMs, updatedAt, id // 参数顺序与五个 SQL 占位符严格对应。
+        ); // 执行参数化更新，不拼接用户输入。
+    } // 接收端配置更新方法结束。
 
     public long countAll() { // 查询未筛选的接收端总数。
         return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM endpoint", Long.class); // COUNT 由数据库计算，不加载全部行。

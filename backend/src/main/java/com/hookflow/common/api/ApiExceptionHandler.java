@@ -27,7 +27,11 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler { // 复
         } else { // 客户端请求错误使用普通信息级别。
             log.info("requestRejected exceptionType={}", exception.getClass().getSimpleName()); // 不记录请求参数、请求体或异常原文。
         } // 日志级别判断结束。
-        return super.handleExceptionInternal(exception, error(status, request), headers, status, request); // 保留框架状态与必要响应头，替换为统一错误体。
+        ApiError responseBody = error(status, request); // 先生成带本次 requestId 的统一错误体。
+        if (exception instanceof TargetNotAllowedException) { // 只识别外部目标安全异常，不改动其他 422 错误。
+            responseBody = new ApiError("TARGET_NOT_ALLOWED", "外部目标地址不被允许", responseBody.requestId()); // 使用契约代码并保留原请求 ID。
+        } // 目标安全异常映射结束。
+        return super.handleExceptionInternal(exception, responseBody, headers, status, request); // 保留框架状态和响应头，返回安全错误体。
     } // 框架异常处理结束。
 
     @ExceptionHandler(ConstraintViolationException.class) // 处理不属于上述 MVC 内置分类的约束异常。
