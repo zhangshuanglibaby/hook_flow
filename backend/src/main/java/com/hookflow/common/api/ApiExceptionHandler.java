@@ -4,6 +4,7 @@ import java.util.UUID; // 过滤器未提供 ID 时使用兜底值。
 import jakarta.validation.ConstraintViolationException; // 识别 Bean Validation 约束异常。
 import org.slf4j.Logger; // 输出不含请求内容的简要错误日志。
 import org.slf4j.LoggerFactory; // 创建当前类的日志器。
+import org.springframework.security.authentication.BadCredentialsException; // 识别登录时用户名或密码错误。
 import org.springframework.http.HttpHeaders; // 保留框架为错误响应设置的必要响应头。
 import org.springframework.http.HttpStatus; // 使用标准 HTTP 状态。
 import org.springframework.http.HttpStatusCode; // 接收框架确定的错误状态。
@@ -35,6 +36,12 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler { // 复
         return ResponseEntity.badRequest().body(error(HttpStatus.BAD_REQUEST, request)); // 返回统一的参数错误体。
     } // 约束异常处理结束。
 
+    @ExceptionHandler(BadCredentialsException.class) // 单独处理登录凭据错误，避免被通用 500 处理器接走。
+    public ResponseEntity<ApiError> handleBadCredentials(BadCredentialsException exception, WebRequest request) { // 返回契约要求的 401 错误。
+        log.info("requestRejected exceptionType={}", exception.getClass().getSimpleName()); // 只记录异常类型，不记录用户名或密码。
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(error(HttpStatus.UNAUTHORIZED, request)); // 使用统一错误体和本次请求 ID。
+    } // 登录失败处理结束。
+
     @ExceptionHandler(Exception.class) // 兜住未分类的控制器异常。
     public ResponseEntity<ApiError> handleUnexpected(Exception exception, WebRequest request) { // 将未知服务端错误映射为 500。
         log.error("requestFailed exceptionType={}", exception.getClass().getSimpleName()); // 不输出异常消息或堆栈，避免泄露请求数据。
@@ -46,6 +53,7 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler { // 复
         String requestId = attribute instanceof String id ? id : UUID.randomUUID().toString(); // 极端情况下生成兜底 ID，避免返回空值。
         return switch (status.value()) { // 使用稳定代码和固定中文文案，不回显异常原文。
             case 400 -> new ApiError("INVALID_REQUEST", "请求参数不合法", requestId); // 请求字段、类型或 JSON 不合法。
+            case 401 -> new ApiError("UNAUTHORIZED", "用户名或密码错误", requestId); // 登录失败不区分账号不存在与密码错误。
             case 404 -> new ApiError("NOT_FOUND", "请求的资源不存在", requestId); // 请求的资源不存在。
             case 405 -> new ApiError("METHOD_NOT_ALLOWED", "请求方法不被允许", requestId); // HTTP 方法不适用。
             case 415 -> new ApiError("UNSUPPORTED_MEDIA_TYPE", "请求内容类型不被支持", requestId); // 请求的媒体类型不适用。
