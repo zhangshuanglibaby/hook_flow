@@ -36,6 +36,22 @@ public final class EventSubmissionInput { // 保存通过接口字段校验的�
         return new EventSubmissionInput(eventId, eventType, endpointId, parsed.payload()); // 暂不访问数据库。
     }
 
+    public static EventSubmissionInput fromTest(EventRequestJsonParser.ParsedEventJson parsed) { // 校验管理员测试事件的整份已解析请求。
+        if (parsed == null) { // 缺少解析结果时，不允许继续创建事件。
+            throw badRequest(); // 沿用现有的 HTTP 400 错误处理。
+        }
+        JsonNode root = parsed.request(); // 取得解析器确认过的 JSON 对象。
+        if (root.propertyNames().stream().anyMatch(key -> // 逐个检查请求中实际出现的字段名。
+                !key.equals("eventType") && !key.equals("endpointId")
+                        && !key.equals("payload"))) { // 只允许这三个字段，因此传入 eventId 也会被拒绝。
+            throw badRequest(); // 未知字段或客户端指定的 eventId 返回 400。
+        }
+        String eventType = requiredText(root.get("eventType")); // 复用业务入口的类型、空白和长度校验。
+        long endpointId = positiveLong(root.get("endpointId")); // 复用业务入口的正整数及 long 范围校验。
+        String eventId = java.util.UUID.randomUUID().toString(); // 由平台生成 UUID，不采用客户端提供的 ID。
+        return new EventSubmissionInput(eventId, eventType, endpointId, parsed.payload()); // 保留解析器已校验并规范化的 payload。
+    }
+
     private static String requiredText(JsonNode node) { // 两个字符串字段共用同一校验规则。
         if (node == null || !node.isTextual()) { // 缺失、null、数字、数组等都不是字符串。
             throw badRequest(); // 必填字段类型错误返回 400。

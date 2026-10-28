@@ -1,10 +1,12 @@
 package com.hookflow.event.api;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -67,8 +69,57 @@ class EventSubmissionInputTests {
         }
     }
 
+    @Test
+    void testEventGeneratesDistinctUuidsAndRetainsCanonicalPayload() {
+        String json = """
+                {"eventType":"order.paid","endpointId":12,"payload":{"b":1.0,"a":null}}
+                """;
+        EventSubmissionInput first = validatedTest(json);
+        EventSubmissionInput second = validatedTest(json);
+
+        assertEquals(4, UUID.fromString(first.eventId()).version());
+        assertNotEquals(first.eventId(), second.eventId());
+        assertEquals("order.paid", first.eventType());
+        assertEquals(12L, first.endpointId());
+        assertEquals("{\"a\":null,\"b\":1}", first.payload().json());
+        assertEquals("null", validatedTest("""
+                {"eventType":"order.paid","endpointId":12,"payload":null}
+                """).payload().json());
+    }
+
+    @Test
+    void testEventRejectsProvidedEventIdUnknownAndMissingFields() {
+        assertBadRequest(() -> EventSubmissionInput.fromTest(null));
+        assertBadTestRequest("""
+                {"eventId":"caller-id","eventType":"order.paid","endpointId":12,"payload":{}}
+                """);
+        assertBadTestRequest("""
+                {"eventType":"order.paid","endpointId":12,"payload":{},"unexpected":true}
+                """);
+        assertBadTestRequest("{\"endpointId\":12,\"payload\":{}}");
+        assertBadTestRequest("{\"eventType\":\"order.paid\",\"payload\":{}}");
+        assertBadTestRequest("{\"eventType\":\"order.paid\",\"endpointId\":12}");
+    }
+
+    @Test
+    void testEventReusesBusinessFieldValidation() {
+        assertBadTestRequest("{\"eventType\":\"  \",\"endpointId\":12,\"payload\":{}}");
+        assertBadTestRequest("{\"eventType\":\"" + "x".repeat(129)
+                + "\",\"endpointId\":12,\"payload\":{}}");
+        assertBadTestRequest("{\"eventType\":42,\"endpointId\":12,\"payload\":{}}");
+        for (String id : new String[] {"0", "-1", "1.0", "\"12\"", "9223372036854775808"}) {
+            assertBadTestRequest("{\"eventType\":\"order.paid\",\"endpointId\":"
+                    + id + ",\"payload\":{}}");
+        }
+    }
+
     private EventSubmissionInput validated(String json) {
         return EventSubmissionInput.from(parser.parse(
+                new ByteArrayInputStream(json.getBytes(StandardCharsets.UTF_8))));
+    }
+
+    private EventSubmissionInput validatedTest(String json) {
+        return EventSubmissionInput.fromTest(parser.parse(
                 new ByteArrayInputStream(json.getBytes(StandardCharsets.UTF_8))));
     }
 
@@ -79,6 +130,10 @@ class EventSubmissionInputTests {
 
     private void assertBadRequest(String json) {
         assertBadRequest(() -> validated(json));
+    }
+
+    private void assertBadTestRequest(String json) {
+        assertBadRequest(() -> validatedTest(json));
     }
 
     private static void assertBadRequest(Runnable action) {
