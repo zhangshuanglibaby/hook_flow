@@ -28,6 +28,9 @@ import com.hookflow.auth.infrastructure.AdminTokenAuthenticationFilter; // 解�
 import com.hookflow.common.api.ApiError; // 统一的错误响应结构。
 import com.hookflow.config.RequestIdFilter; // 读取当前请求已经生成的 requestId。
 
+import com.hookflow.auth.application.BusinessApiKeyService; // 提供业务 Key 的数据库有效性校验。
+import com.hookflow.auth.infrastructure.BusinessApiKeyAuthenticationFilter; // 根据有效 Key 建立独立业务身份。
+
 @Configuration(proxyBeanMethods = false) // 注册安全配置，并避免不必要的配置类代理。
 public class AuthSecurityConfiguration { // 定义 HookFlow 的 HTTP 安全边界。
 
@@ -37,6 +40,7 @@ public class AuthSecurityConfiguration { // 定义 HookFlow 的 HTTP 安全边�
     public SecurityFilterChain securityFilterChain( // 创建应用唯一的无状态安全过滤链。
             HttpSecurity http, // Spring Security 提供的 HTTP 配置入口。
             ObjectProvider<AdminLoginService> loginServiceProvider, // 在正式配置中取得 Token 校验服务。
+            ObjectProvider<BusinessApiKeyService> apiKeyServiceProvider, // 正式配置取得业务 Key 服务；skeleton 配置允许缺席。
             JsonMapper jsonMapper // 序列化统一 401/403 错误体。
     ) throws Exception { // 安全链构建过程可能抛出配置异常。
 
@@ -50,13 +54,21 @@ public class AuthSecurityConfiguration { // 定义 HookFlow 的 HTTP 安全边�
 
         http.logout(AbstractHttpConfigurer::disable); // 不启用框架默认登出路径，项目登出由正式 Controller 处理。
 
-        AdminLoginService loginService = loginServiceProvider.getIfAvailable(); // skeleton 配置没有数据库服务，正式配置才会取得登录服务。
+        AdminLoginService loginService = loginServiceProvider.getIfAvailable(); // skeleton 配置没有数据库登录服务。
+        BusinessApiKeyService apiKeyService = apiKeyServiceProvider.getIfAvailable(); // skeleton 配置也没有业务 Key 服务。
 
-        if (loginService != null) { // 只有正式数据库配置存在时才接入管理员 Token 过滤器。
-            http.addFilterBefore( // 将管理员身份建立放在授权判断之前。
-                    new AdminTokenAuthenticationFilter(loginService), // 创建只服务于当前安全链的管理员 Token 过滤器。
-                    AuthorizationFilter.class // 确保授权规则执行前已经完成 Token 校验。
-            ); // 管理员 Token 过滤器接入结束。
+        if (loginService != null) { // 正式数据库配置中先注册管理员过滤器。
+            http.addFilterBefore( // 管理员 Token 必须在授权判断之前完成校验。
+                    new AdminTokenAuthenticationFilter(loginService), // 使用现有数据库会话校验能力。
+                    AuthorizationFilter.class // 以授权过滤器作为明确的顺序锚点。
+            ); // 管理员过滤器注册结束。
+
+            if (apiKeyService != null) { // 业务 Key 服务存在时才注册第二个过滤器。
+                http.addFilterAfter( // 先处理管理员 Token，再考虑独立的业务 Key 身份。
+                        new BusinessApiKeyAuthenticationFilter(apiKeyService), // 只给有效 Key 授予 ROLE_BUSINESS。
+                        AdminTokenAuthenticationFilter.class // 使用刚注册的管理员过滤器作为顺序锚点。
+                ); // 业务过滤器注册结束。
+            } // 业务服务检查结束。
         } // 正式配置与 skeleton 配置的差异处理结束。
 
         http.exceptionHandling(exceptionHandling -> exceptionHandling // 配置安全层直接产生的 401 和 403 响应。
@@ -68,6 +80,7 @@ public class AuthSecurityConfiguration { // 定义 HookFlow 的 HTTP 安全边�
                 .requestMatchers(HttpMethod.GET, "/actuator/health").permitAll() // 最小健康检查保持公开。
                 .requestMatchers(HttpMethod.POST, "/api/v1/auth/logout").hasRole("ADMIN") // 登出只允许当前管理员 Token 调用。
                 .requestMatchers("/api/v1/admin/**").hasRole("ADMIN") // 所有管理接口只允许管理员角色。
+                .requestMatchers(HttpMethod.POST, "/api/v1/events").hasRole("BUSINESS") // 业务事件入口只允许已验证的业务 Key 身份。
                 .anyRequest().denyAll()); // 尚未实现或未明确授权的路径继续拒绝访问。
 
         return http.build(); // 构造并返回最终安全过滤链。
@@ -80,7 +93,9 @@ public class AuthSecurityConfiguration { // 定义 HookFlow 的 HTTP 安全边�
                 jsonMapper, // 使用应用统一 JSON 映射器序列化错误体。
                 HttpServletResponse.SC_UNAUTHORIZED, // 将 HTTP 状态设置为 401。
                 "UNAUTHORIZED", // 使用 P0-02 约定的稳定错误代码。
-                "未提供有效的管理员 Token" // 不回显 Token 内容，也不泄露数据库校验细节。
+               "POST".equals(request.getMethod()) && "/api/v1/events".equals(request.getRequestURI()) // 区分业务入口与管理入口的错误文案。
+                ? "未提供有效的业务 API Key" // 业务入口缺少有效 Key 时使用此安全文案。
+                : "未提供有效的管理员 Token" // 其他受保护入口沿用管理员 Token 文案。
         ); // 401 错误响应创建结束。
     } // 401 入口点创建结束。
 
