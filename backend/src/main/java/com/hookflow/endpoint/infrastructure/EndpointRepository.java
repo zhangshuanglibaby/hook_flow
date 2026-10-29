@@ -52,6 +52,11 @@ public class EndpointRepository { // 集中管理接收端配置的 JDBC 查询�
         ); // 执行参数化更新，不拼接用户输入。
     } // 接收端配置更新方法结束。
 
+    public int enable(long id, LocalDateTime now) {
+        return jdbcTemplate.update("UPDATE endpoint SET enabled = 1, updated_at = ? "
+                + "WHERE id = ? AND enabled = 0", now, id);
+    }
+
     public int disable(long id, LocalDateTime now) {
         return jdbcTemplate.update("UPDATE endpoint SET enabled = 0, updated_at = ? "
                 + "WHERE id = ? AND enabled = 1", now, id);

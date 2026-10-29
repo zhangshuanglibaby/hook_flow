@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.RestController; // 注册 JSON �
 import org.springframework.web.server.ResponseStatusException; // 交给统一异常处理器生成错误响应。
 import com.hookflow.config.RequestIdFilter; // 使用服务端请求 ID 的属性名称。
 import com.hookflow.endpoint.application.EndpointDisableService;
+import com.hookflow.endpoint.application.EndpointEnableService;
 import com.hookflow.endpoint.application.EndpointQueryService; // 调用接收端查询服务。
 import com.hookflow.endpoint.application.EndpointUpdateService; // 调用接收端编辑事务服务。
 import com.hookflow.endpoint.domain.EndpointConfiguration; // 将内部配置映射为安全响应。
@@ -28,6 +29,7 @@ import com.hookflow.endpoint.domain.EndpointTargetType; // 区分 EXTERNAL 与 S
 @Profile("!skeleton") // 无数据库配置不注册接收端接口。
 @RestController // 交由 Spring MVC 处理管理员 HTTP 请求。
 public class EndpointController { // 提供列表、详情和当前安全范围内的编辑接口。
+    private final EndpointEnableService enabling;
     private final EndpointDisableService disabling;
     private final EndpointQueryService queries; // 保存查询应用服务。
     private final EndpointUpdateService updates; // 保存编辑应用服务。
@@ -35,7 +37,8 @@ public class EndpointController { // 提供列表、详情和当前安全范围�
 
     public EndpointController(EndpointQueryService queries, EndpointUpdateService updates,
             EndpointSecretProvisioningService provisioning,
-            EndpointDisableService disabling) {
+            EndpointDisableService disabling, EndpointEnableService enabling) {
+        this.enabling = enabling;
         this.disabling = disabling;
         this.queries = queries; // 保存服务供 GET 接口使用。
         this.updates = updates; // 保存服务供 PATCH 接口使用。
@@ -119,6 +122,18 @@ public class EndpointController { // 提供列表、详情和当前安全范围�
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND)); // 接收端不存在时返回 404。
         return toView(configuration); // 响应仍不包含签名密钥。
     } // 接收端编辑接口结束。
+
+    @PostMapping(path = "/api/v1/admin/endpoints/{id}/enable", produces = MediaType.APPLICATION_JSON_VALUE)
+    public EndpointView enable(@PathVariable String id, @RequestBody(required = false) byte[] body,
+            Principal principal, HttpServletRequest request) {
+        long endpointId = positiveLong(id);
+        if (body != null && body.length != 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
+        }
+        return toView(enabling.enable(endpointId, Long.parseLong(principal.getName()),
+                (String) request.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE))
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND)));
+    }
 
     @PostMapping(path = "/api/v1/admin/endpoints/{id}/disable", produces = MediaType.APPLICATION_JSON_VALUE)
     public EndpointView disable(@PathVariable String id, @RequestBody(required = false) byte[] body,

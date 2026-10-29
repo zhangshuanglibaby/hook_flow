@@ -67,6 +67,16 @@ public class EventClaimGuard { // 封装领取时的事件锁定与关联复查�
                 event.latestRoundNo(), event.currentStatus()), roundNo, expectedStatus) == 1;
     }
 
+    @Transactional(propagation = Propagation.MANDATORY)
+    public boolean markResumed(ClaimEvent event, int roundNo, String nextStatus) {
+        if (event.latestRoundNo() != roundNo || !"PAUSED".equals(event.currentStatus())
+                || !("PENDING".equals(nextStatus) || "WAIT_RETRY".equals(nextStatus))) {
+            throw new IllegalArgumentException("事件恢复状态无效");
+        }
+        return events.markResumed(new EventRepository.LockedEvent(event.eventPk(), event.endpointId(),
+                event.latestRoundNo(), event.currentStatus()), roundNo, nextStatus) == 1;
+    }
+
     public java.util.Optional<EventRepository.DeliveryPayload> findDeliveryPayload(long eventPk) {
         return events.findDeliveryPayload(eventPk); // 供提交后的投递工作读取原规范化正文。
     }
