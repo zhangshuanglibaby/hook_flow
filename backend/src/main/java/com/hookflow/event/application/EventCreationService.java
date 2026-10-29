@@ -1,5 +1,6 @@
 package com.hookflow.event.application; // 新事件创建的事务协调属于事件应用层。
 
+import com.hookflow.delivery.application.DeliveryWakeup;
 import com.hookflow.delivery.application.InitialDeliveryTaskService; // 通过投递应用层入口创建首轮任务。
 import com.hookflow.endpoint.application.EndpointTaskSnapshotService; // 持锁取得已启用接收端的快照。
 import com.hookflow.endpoint.domain.EndpointTaskSnapshot; // 保存本次创建使用的接收端配置。
@@ -16,21 +17,29 @@ import org.springframework.http.HttpStatus; // 指定非法内部调用的请求
 import org.springframework.stereotype.Service; // 注册事件创建用例。
 import org.springframework.transaction.annotation.Isolation; // 采用约定的事务隔离级别。
 import org.springframework.transaction.annotation.Transactional; // 将两次插入置于同一事务。
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.server.ResponseStatusException; // 复用统一的 400 错误响应。
 
 @Profile("!skeleton") // 正式数据库模式才启用创建服务。
 @Service // 供后续事件控制器调用。
 public class EventCreationService { // 协调锁、快照、事件和首轮任务。
+    private static final Logger log = LoggerFactory.getLogger(EventCreationService.class);
     private final EndpointTaskSnapshotService endpoints; // 只通过接收端应用层入口取快照。
     private final EventRepository events; // 保存事件模块的仓库。
     private final InitialDeliveryTaskService tasks; // 只通过投递应用层入口创建任务。
+    private final DeliveryWakeup wakeup;
     private final Clock clock; // 保证事务内使用同一个 UTC 时间来源。
 
     public EventCreationService(EndpointTaskSnapshotService endpoints,
-            EventRepository events, InitialDeliveryTaskService tasks, Clock clock) { // 由 Spring 注入依赖。
+            EventRepository events, InitialDeliveryTaskService tasks, Clock clock,
+            DeliveryWakeup wakeup) { // 由 Spring 注入依赖。
         this.endpoints = endpoints; // 供事务开始后首先锁定接收端。
         this.events = events; // 供持锁后写入事件。
         this.tasks = tasks; // 供同一事务写入首轮任务。
+        this.wakeup = wakeup;
         this.clock = clock; // 供本次创建取得一次时间。
     }
 
@@ -48,6 +57,16 @@ public class EventCreationService { // 协调锁、快照、事件和首轮任�
         LocalDateTime databaseTime = LocalDateTime.ofInstant(createdAt, ZoneOffset.UTC); // 按 UTC 转成数据库时间。
         long eventPk = events.insert(eventId, eventType, endpointId, payload, databaseTime); // 写入第 1 轮 PENDING 事件。
         tasks.createFirstRound(eventPk, snapshot.orElseThrow(), databaseTime); // 同事务复制配置并写入首轮任务。
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                try {
+                    wakeup.requestPublish();
+                } catch (RuntimeException exception) {
+                    log.warn("deliveryWakeupRejected exceptionType={}", exception.getClass().getSimpleName());
+                }
+            }
+        });
         return Optional.of(new CreatedEvent(eventId, eventType, endpointId, createdAt)); // 仅返回创建结果，不在事务内投递。
     }
 

@@ -59,6 +59,10 @@
 			<artifactId>httpclient5</artifactId> <!-- 引入同步 HTTP 客户端；不在此指定版本，由现有 Spring Boot BOM 管理。 -->
 		</dependency> <!-- 结束此依赖声明。 -->
 		<dependency>
+			<groupId>redis.clients</groupId>
+			<artifactId>jedis</artifactId>
+		</dependency>
+		<dependency>
 			<groupId>org.flywaydb</groupId>
 			<artifactId>flyway-mysql</artifactId>
 		</dependency>

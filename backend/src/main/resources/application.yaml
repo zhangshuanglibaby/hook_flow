@@ -13,8 +13,11 @@ hookflow: # HookFlow 自有配置；后续步骤会实现读取和校验。
   security: # 应用敏感配置。
     secret-encryption-key: "${HOOKFLOW_SECRET_ENCRYPTION_KEY}" # 从环境变量读取加密主密钥。
   redis: # 可选的任务唤醒配置；Redis 不是任务事实来源。
-    host: "${REDIS_HOST:localhost}" # 未设置时采用本机地址；目前尚未连接 Redis。
-    port: "${REDIS_PORT:6379}" # 未设置时采用默认端口；目前尚未连接 Redis。
+    enabled: "${HOOKFLOW_REDIS_ENABLED:false}"
+    host: "${REDIS_HOST:localhost}"
+    port: "${REDIS_PORT:6379}"
+    username: "${REDIS_USERNAME:}"
+    password: "${REDIS_PASSWORD:}"
   delivery: # 新建投递任务时要使用的策略配置。
     max-attempts: "${HOOKFLOW_MAX_ATTEMPTS:3}" # 未设置时每轮最多尝试 3 次。
     retry-delays: "${HOOKFLOW_RETRY_DELAYS:10s,30s}" # 未设置时采用两档 10 秒、30 秒间隔。
