@@ -1,6 +1,8 @@
 package com.hookflow.delivery.infrastructure;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.net.InetAddress;
@@ -19,7 +21,8 @@ class GuardedDnsResolverTests {
         GuardedDnsResolver resolver = new GuardedDnsResolver(
                 resolverReturning(new InetAddress[] {publicAddress, loopback}));
 
-        assertThrows(UnknownHostException.class, () -> resolver.resolve("target.example", 443));
+        assertInstanceOf(GuardedDnsResolver.ProtectedTargetAddressException.class,
+                assertThrows(UnknownHostException.class, () -> resolver.resolve("target.example", 443)));
     }
 
     @Test
@@ -74,8 +77,29 @@ class GuardedDnsResolverTests {
     void rejectsMissingOrEmptyResults() {
         for (InetAddress[] result : new InetAddress[][] {null, new InetAddress[0]}) {
             GuardedDnsResolver resolver = new GuardedDnsResolver(resolverReturning(result));
-            assertThrows(UnknownHostException.class, () -> resolver.resolve("target.example", 443));
+            assertFalse(GuardedDnsResolver.ProtectedTargetAddressException.class.isInstance(
+                    assertThrows(UnknownHostException.class, () -> resolver.resolve("target.example", 443))));
         }
+    }
+
+    @Test
+    void keepsOrdinaryDnsFailureDistinctFromProtectedAddress() {
+        DnsResolver failing = new DnsResolver() {
+            @Override
+            public InetAddress[] resolve(String host) throws UnknownHostException {
+                throw new UnknownHostException("ordinary DNS failure");
+            }
+
+            @Override
+            public String resolveCanonicalHostname(String host) {
+                return host;
+            }
+        };
+
+        UnknownHostException failure = assertThrows(UnknownHostException.class,
+                () -> new GuardedDnsResolver(failing).resolve("target.example", 443));
+        assertFalse(GuardedDnsResolver.ProtectedTargetAddressException.class.isInstance(failure));
+        assertEquals("ordinary DNS failure", failure.getMessage());
     }
 
     private static DnsResolver resolverReturning(InetAddress[] result) {

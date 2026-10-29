@@ -18,7 +18,7 @@ import java.util.concurrent.TimeUnit; // 将等待时间换算为毫秒。
 public final class TestHttpReceiver implements AutoCloseable { // 可在测试结束时关闭的本机接收端。
     private final HttpServer server; // 保存实际监听的 HTTP 服务。
     private final BlockingQueue<ReceivedRequest> requests = new LinkedBlockingQueue<>(); // 保存收到的请求。
-    private volatile Response response = new Response(200, "ok", null); // 默认返回成功响应。
+    private volatile Response response = new Response(200, "ok", null, null); // 默认返回成功响应。
 
     private TestHttpReceiver() throws IOException { // 只允许通过 start 方法启动。
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0); // 只监听本机，端口由系统分配。
@@ -44,11 +44,16 @@ public final class TestHttpReceiver implements AutoCloseable { // 可在测试�
         if (status < 200 || status > 599) { // 限定为可直接返回的最终响应状态。
             throw new IllegalArgumentException("HTTP status must be between 200 and 599"); // 拒绝无效配置。
         } // 状态检查结束。
-        response = new Response(status, Objects.requireNonNull(body), null); // 一次替换整组响应配置。
+        response = new Response(status, Objects.requireNonNull(body), null, null); // 一次替换整组响应配置。
     } // 配置响应的方法结束。
 
+    public void respondWithRetryAfter(int status, String body, String retryAfter) {
+        respondWith(status, body);
+        response = new Response(status, body, null, Objects.requireNonNull(retryAfter));
+    }
+
     public void respondWithRedirect(URI location) { // 为重定向禁用测试配置真实 Location。
-        response = new Response(302, "redirect", Objects.requireNonNull(location).toString()); // 保存明确的跳转目标。
+        response = new Response(302, "redirect", Objects.requireNonNull(location).toString(), null); // 保存明确的跳转目标。
     } // 重定向响应配置结束。
 
     public ReceivedRequest awaitRequest(Duration timeout) throws InterruptedException { // 等待接收端收到请求。
@@ -67,6 +72,9 @@ public final class TestHttpReceiver implements AutoCloseable { // 可在测试�
             if (configured.location() != null) { // 只有重定向测试会指定目标。
                 exchange.getResponseHeaders().set("Location", configured.location()); // 让客户端确实有可跟随的地址。
             } // Location 配置结束。
+            if (configured.retryAfter() != null) {
+                exchange.getResponseHeaders().set("Retry-After", configured.retryAfter());
+            }
             exchange.sendResponseHeaders(configured.status(), bytes.length == 0 ? -1 : bytes.length); // 发送状态和正文长度。
             if (bytes.length > 0) { // 有正文时才写入响应流。
                 exchange.getResponseBody().write(bytes); // 将配置的内容发给客户端。
@@ -82,5 +90,5 @@ public final class TestHttpReceiver implements AutoCloseable { // 可在测试�
     } // 关闭方法结束。
 
     public record ReceivedRequest(String method, URI uri, Headers headers, String body) {} // 保存收到的方法、路径、请求头和正文。
-    private record Response(int status, String body, String location) {} // 保存响应状态、正文和可选跳转地址。
+    private record Response(int status, String body, String location, String retryAfter) {}
 } // HTTP 测试接收端结束。

@@ -1,11 +1,11 @@
 package com.hookflow.delivery.infrastructure;
 
+import static com.hookflow.delivery.domain.DeliveryAttemptClassification.AttemptResult.LOCAL_FAILURE;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ch.qos.logback.classic.Logger;
@@ -34,7 +34,7 @@ class SingleDeliveryHttpClientTests {
         try (TestHttpReceiver receiver = TestHttpReceiver.start();
                 SingleDeliveryHttpClient client = clientForSimulator(clock, receiver)) {
             assertEquals(200, client.postSimulatorOnce(EVENT_ID,
-                    BODY.getBytes(StandardCharsets.UTF_8), SECRET));
+                    BODY.getBytes(StandardCharsets.UTF_8), SECRET, 5000).httpStatus());
 
             ReceivedRequest received = receiver.awaitRequest(WAIT);
             assertNotNull(received);
@@ -58,13 +58,13 @@ class SingleDeliveryHttpClientTests {
         try (TestHttpReceiver receiver = TestHttpReceiver.start();
                 SingleDeliveryHttpClient client = clientForSimulator(clock, receiver)) {
             assertEquals(200, client.postSimulatorOnce(EVENT_ID,
-                    BODY.getBytes(StandardCharsets.UTF_8), SECRET));
+                    BODY.getBytes(StandardCharsets.UTF_8), SECRET, 5000).httpStatus());
             ReceivedRequest first = receiver.awaitRequest(WAIT);
             assertNotNull(first);
 
             clock.advance(Duration.ofSeconds(1));
             assertEquals(200, client.postSimulatorOnce(EVENT_ID,
-                    BODY.getBytes(StandardCharsets.UTF_8), SECRET));
+                    BODY.getBytes(StandardCharsets.UTF_8), SECRET, 5000).httpStatus());
             ReceivedRequest second = receiver.awaitRequest(WAIT);
             assertNotNull(second);
             assertEquals(EVENT_ID, second.headers().getFirst("X-HookFlow-Event-Id"));
@@ -84,7 +84,7 @@ class SingleDeliveryHttpClientTests {
             source.respondWithRedirect(destination.uri());
 
             assertEquals(302, client.postSimulatorOnce(EVENT_ID,
-                    BODY.getBytes(StandardCharsets.UTF_8), SECRET));
+                    BODY.getBytes(StandardCharsets.UTF_8), SECRET, 5000).httpStatus());
             assertNotNull(source.awaitRequest(WAIT));
             assertNull(source.awaitRequest(NO_EXTRA_REQUEST));
             assertNull(destination.awaitRequest(NO_EXTRA_REQUEST));
@@ -99,7 +99,7 @@ class SingleDeliveryHttpClientTests {
             receiver.respondWith(503, "try later");
 
             assertEquals(503, client.postSimulatorOnce(EVENT_ID,
-                    BODY.getBytes(StandardCharsets.UTF_8), SECRET));
+                    BODY.getBytes(StandardCharsets.UTF_8), SECRET, 5000).httpStatus());
             assertNotNull(receiver.awaitRequest(WAIT));
             assertNull(receiver.awaitRequest(NO_EXTRA_REQUEST));
         }
@@ -110,10 +110,8 @@ class SingleDeliveryHttpClientTests {
         try (TestHttpReceiver receiver = TestHttpReceiver.start();
                 SingleDeliveryHttpClient client = clientForSimulator(
                         new MutableClock(Instant.parse("2026-10-29T00:00:00Z")), receiver)) {
-            IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
-                    () -> client.postSimulatorOnce(EVENT_ID,
-                            BODY.getBytes(StandardCharsets.UTF_8), ""));
-            assertTrue(failure.getMessage().contains("签名密钥缺失"));
+            assertEquals(LOCAL_FAILURE, client.postSimulatorOnce(EVENT_ID,
+                    BODY.getBytes(StandardCharsets.UTF_8), "", 5000).classification().result());
             assertNull(receiver.awaitRequest(NO_EXTRA_REQUEST));
         }
     }
@@ -128,7 +126,7 @@ class SingleDeliveryHttpClientTests {
                 SingleDeliveryHttpClient client = clientForSimulator(
                         new MutableClock(Instant.parse("2026-10-29T00:00:00Z")), receiver)) {
             assertEquals(200, client.postSimulatorOnce(EVENT_ID,
-                    BODY.getBytes(StandardCharsets.UTF_8), SECRET));
+                    BODY.getBytes(StandardCharsets.UTF_8), SECRET, 5000).httpStatus());
             ReceivedRequest received = receiver.awaitRequest(WAIT);
             assertNotNull(received);
             String signature = received.headers().getFirst("X-HookFlow-Signature");
@@ -152,7 +150,7 @@ class SingleDeliveryHttpClientTests {
                     SingleDeliveryHttpClient client = clientForSimulator(
                             new MutableClock(Instant.parse("2026-10-29T00:00:00Z")), receiver)) {
                 assertEquals(200, client.postSimulatorOnce(EVENT_ID,
-                        BODY.getBytes(StandardCharsets.UTF_8), SECRET));
+                        BODY.getBytes(StandardCharsets.UTF_8), SECRET, 5000).httpStatus());
                 assertNotNull(receiver.awaitRequest(WAIT));
             }
         } finally {
