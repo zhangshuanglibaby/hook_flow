@@ -2,6 +2,7 @@ package com.hookflow.event.infrastructure;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.hookflow.delivery.infrastructure.InitialDeliveryTaskRepository;
@@ -17,6 +18,10 @@ import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.util.Base64;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataAccessException;
@@ -108,6 +113,53 @@ class InitialEventPersistenceIntegrationTests {
 
         assertEquals(0L, jdbc.queryForObject("SELECT COUNT(*) FROM event WHERE event_id = ?",
                 Long.class, eventId));
+    }
+
+    @Test
+    void lockedEventReadHoldsRowUntilCommitAndSeesCurrentState() throws Exception {
+        JdbcTemplate jdbc = jdbc();
+        EventRepository events = new EventRepository(jdbc);
+        long endpointId = insertEndpoint(jdbc, EndpointTargetType.SIMULATOR);
+        long eventPk = events.insert("locked-event-" + UUID.randomUUID(), "order.paid",
+                endpointId, payload("null"), NOW);
+        assertTrue(events.findEndpointId(Long.MAX_VALUE).isEmpty());
+        assertTrue(Boolean.TRUE.equals(transaction(jdbc).execute(
+                status -> events.findByIdForUpdate(Long.MAX_VALUE).isEmpty())));
+
+        CountDownLatch locked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (var threads = Executors.newVirtualThreadPerTaskExecutor()) {
+            var holder = threads.submit(() -> transaction(jdbc).execute(status -> {
+                EventRepository.LockedEvent event = events.findByIdForUpdate(eventPk).orElseThrow();
+                assertEquals(eventPk, event.id());
+                assertEquals(endpointId, event.endpointId());
+                assertEquals(1, event.latestRoundNo());
+                assertEquals("PENDING", event.currentStatus());
+                locked.countDown();
+                try {
+                    assertTrue(release.await(10, TimeUnit.SECONDS));
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(exception);
+                }
+                return null;
+            }));
+            try {
+                assertTrue(locked.await(5, TimeUnit.SECONDS));
+                var locate = threads.submit(() -> events.findEndpointId(eventPk).orElseThrow());
+                assertEquals(endpointId, locate.get(5, TimeUnit.SECONDS));
+                var updater = threads.submit(() -> jdbc.update(
+                        "UPDATE event SET current_status = 'WAIT_RETRY' WHERE id = ?", eventPk));
+                assertThrows(TimeoutException.class, () -> updater.get(250, TimeUnit.MILLISECONDS));
+                release.countDown();
+                holder.get(5, TimeUnit.SECONDS);
+                assertEquals(1, updater.get(5, TimeUnit.SECONDS));
+                assertEquals("WAIT_RETRY", transaction(jdbc).execute(status ->
+                        events.findByIdForUpdate(eventPk).orElseThrow().currentStatus()));
+            } finally {
+                release.countDown();
+            }
+        }
     }
 
     private static JdbcTemplate jdbc() {

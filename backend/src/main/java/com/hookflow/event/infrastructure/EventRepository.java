@@ -67,6 +67,72 @@ public class EventRepository { // 只封装 event 表的持久化操作。
         );
     }
 
+    public Optional<Long> findEndpointId(long eventPk) { // 非锁定定位事件关联的接收端 ID。
+        return jdbcTemplate.query( // 普通查询不取得事件行锁，也不改变事件状态。
+                "SELECT endpoint_id FROM event WHERE id = ?", // 仅读取确定加锁顺序所需的字段。
+                (rs, rowNum) -> rs.getLong("endpoint_id"), // 将数据库值转换为内部接收端 ID。
+                eventPk // 绑定已定位的事件主键，不拼接 SQL。
+        ).stream().findFirst(); // 事件不存在时返回空值，领取流程应跳过该候选。
+    } // 定位结束；取得接收端锁后仍须重新锁定事件并复查关联。
+
+    public Optional<LockedEvent> findByIdForUpdate(long eventPk) { // 在调用方已有的领取事务中，按内部主键锁定事件。
+        return jdbcTemplate.query( // 使用当前事务的连接执行查询，行锁持续到该事务结束。
+                "SELECT id, endpoint_id, latest_round_no, current_status " // 只读取领取时需要复查的事件字段。
+                        + "FROM event WHERE id = ? FOR UPDATE", // 按主键当前读并锁行，不依赖先前候选查询的旧值。
+                (rs, rowNum) -> new LockedEvent( // 将锁定行映射为不含事件内容的内部记录。
+                        rs.getLong("id"), // 保留实际锁定的事件主键。
+                        rs.getLong("endpoint_id"), // 供领取事务复查任务关联的接收端。
+                        rs.getInt("latest_round_no"), // 供领取事务确认候选任务仍是最新轮。
+                        rs.getString("current_status") // 供领取事务复查事件当前状态。
+                ), // 结束单行映射；此处不更新事件。
+                eventPk // 绑定已定位的事件内部主键，不拼接 SQL。
+        ).stream().findFirst(); // 事件不存在时返回空值，由领取事务跳过候选任务。
+    } // 锁定读取结束；锁的释放由调用方事务控制。
+
+    public int markDelivering(LockedEvent event, String expectedStatus) { // 在调用方事务中同步最新轮事件状态。
+        if (event == null || event.id() <= 0 || event.endpointId() <= 0
+                || event.latestRoundNo() < 1) { // 拒绝缺失或不合法的持锁事件身份。
+            throw new IllegalArgumentException("领取事件无效"); // 不对无法确认身份的事件写状态。
+        }
+        if (!"PENDING".equals(expectedStatus) && !"WAIT_RETRY".equals(expectedStatus)) { // 领取只允许两种待执行状态。
+            throw new IllegalArgumentException("领取前事件状态无效"); // 禁止从暂停或终态直接转为投递中。
+        }
+        return jdbcTemplate.update( // 使用调用方已持有事件行锁的同一数据库事务。
+                "UPDATE event SET current_status = 'DELIVERING', terminal_at = NULL "
+                        + "WHERE id = ? AND endpoint_id = ? AND latest_round_no = ? "
+                        + "AND current_status = ?", // 仅更新身份、接收端、最新轮和原状态均未变化的事件。
+                event.id(), event.endpointId(), event.latestRoundNo(), expectedStatus // 逐一绑定条件参数。
+        ); // 返回影响行数；后续领取服务必须要求恰好为 1，否则回滚整个领取事务。
+    }
+
+    public Optional<DeliveryPayload> findDeliveryPayload(long eventPk) { // 投递线程只读取已提交的事件快照。
+        return jdbcTemplate.query("SELECT id, event_id, payload_json FROM event WHERE id = ?",
+                (rs, row) -> new DeliveryPayload(rs.getLong("id"), rs.getString("event_id"),
+                        rs.getString("payload_json")), eventPk).stream().findFirst();
+    }
+
+    public int markDeliveryCompleted(LockedEvent event, int roundNo, String status,
+            LocalDateTime completedAt) { // 同一完成事务内更新最新轮事件的冗余状态。
+        if (event.latestRoundNo() != roundNo || !"DELIVERING".equals(event.currentStatus())
+                || !("SUCCESS".equals(status) || "WAIT_RETRY".equals(status)
+                        || "PAUSED".equals(status) || "FINAL_FAILED".equals(status))) {
+            throw new IllegalArgumentException("事件完成状态无效");
+        }
+        LocalDateTime terminalAt = "SUCCESS".equals(status) || "FINAL_FAILED".equals(status)
+                ? completedAt : null;
+        return jdbcTemplate.update("UPDATE event SET current_status = ?, terminal_at = ? "
+                        + "WHERE id = ? AND endpoint_id = ? AND latest_round_no = ? "
+                        + "AND current_status = 'DELIVERING'",
+                status, terminalAt, event.id(), event.endpointId(), roundNo);
+    }
+
+    public record DeliveryPayload(long eventPk, String eventId, String payloadJson) {
+    }
+
+    public record LockedEvent(long id, long endpointId, int latestRoundNo,
+            String currentStatus) { // 仅传递持锁后的核对数据，不包含 payload 或密钥。
+    } // 事件锁定读取结果定义结束。
+
     public record ExistingEvent(String eventId, String eventType, long endpointId,
             String payloadJson, byte[] payloadFingerprint, int latestRoundNo,
             String currentStatus, LocalDateTime createdAt) { // 保存已提交事件的去重和响应所需字段。
