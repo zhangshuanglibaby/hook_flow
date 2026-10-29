@@ -125,6 +125,48 @@ public class DueDeliveryTaskRepository { // 只负责非锁定读取候选任务
         }
     }
 
+    public List<LeaseCandidate> findExpiredLeaseCandidates(LocalDateTime now,
+            LocalDateTime afterLease, long afterId) {
+        Objects.requireNonNull(now, "扫描时间缺失");
+        if (afterLease == null) {
+            return jdbcTemplate.query("SELECT id, lease_until, claim_token FROM delivery_task "
+                            + "WHERE status = 'DELIVERING' AND lease_until <= ? "
+                            + "ORDER BY lease_until, id LIMIT ?",
+                    (rs, row) -> new LeaseCandidate(rs.getLong("id"),
+                            rs.getObject("lease_until", LocalDateTime.class), rs.getString("claim_token")), now, BATCH_SIZE);
+        }
+        if (afterId <= 0) {
+            throw new IllegalArgumentException("租约扫描游标无效");
+        }
+        return jdbcTemplate.query("SELECT id, lease_until, claim_token FROM delivery_task "
+                        + "WHERE status = 'DELIVERING' AND lease_until <= ? "
+                        + "AND (lease_until > ? OR (lease_until = ? AND id > ?)) "
+                        + "ORDER BY lease_until, id LIMIT ?",
+                (rs, row) -> new LeaseCandidate(rs.getLong("id"),
+                        rs.getObject("lease_until", LocalDateTime.class), rs.getString("claim_token")),
+                now, afterLease, afterLease, afterId, BATCH_SIZE);
+    }
+
+    @Transactional(propagation = Propagation.MANDATORY)
+    public int markRecovered(LockedDeliveryTask task, String status,
+            LocalDateTime due, LocalDateTime now) {
+        return jdbcTemplate.update("UPDATE delivery_task SET status = ?, next_run_at = ?, "
+                        + "resume_status = ?, resume_due_at = ?, lease_until = NULL, "
+                        + "claim_token = NULL, finished_at = ?, updated_at = ? "
+                        + "WHERE id = ? AND event_pk = ? AND round_no = ? "
+                        + "AND status = 'DELIVERING' AND attempt_count = ? "
+                        + "AND claim_token = ? AND lease_until <= ?",
+                status, "WAIT_RETRY".equals(status) ? due : null,
+                "PAUSED".equals(status) ? "WAIT_RETRY" : null,
+                "PAUSED".equals(status) ? due : null,
+                "FINAL_FAILED".equals(status) ? now : null, now,
+                task.id(), task.eventPk(), task.roundNo(), task.attemptCount(),
+                task.claimToken(), now);
+    }
+
+    public record LeaseCandidate(long id, LocalDateTime leaseUntil, String claimToken) {
+    }
+
     public record LockedDeliveryTask(long id, long eventPk, int roundNo, String status,
             int attemptCount, int maxAttempts, BigDecimal retryDelay1Seconds,
             BigDecimal retryDelay2Seconds, LocalDateTime leaseUntil, String claimToken) {

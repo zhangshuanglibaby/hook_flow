@@ -39,6 +39,21 @@ public class DeliveryAttemptRepository { // 只负责 delivery_attempt 表的持
         } // 插入结果检查结束。
     } // STARTED 插入结束。
 
+    @Transactional(propagation = Propagation.MANDATORY)
+    public int finishInterrupted(LockedAttempt attempt, LocalDateTime endedAt, long durationMs) {
+        Objects.requireNonNull(attempt, "持锁尝试缺失");
+        Objects.requireNonNull(endedAt, "恢复时间缺失");
+        if (endedAt.isBefore(attempt.startedAt()) || durationMs < 0) {
+            throw new IllegalArgumentException("恢复时间或耗时无效");
+        }
+        return jdbcTemplate.update("UPDATE delivery_attempt SET result = 'UNKNOWN', "
+                        + "ended_at = ?, duration_ms = ?, http_status = NULL, response_excerpt = NULL, "
+                        + "error_code = 'EXECUTOR_INTERRUPTED', error_message = '执行器中断，HTTP结果未知' "
+                        + "WHERE id = ? AND task_id = ? AND attempt_no = ? "
+                        + "AND result = 'STARTED' AND ended_at IS NULL",
+                endedAt, durationMs, attempt.id(), attempt.taskId(), attempt.attemptNo());
+    }
+
     @Transactional(propagation = Propagation.MANDATORY) // 必须在完成事务已锁定任务之后调用。
     public Optional<LockedAttempt> lockStarted(long taskId, int attemptNo) { // 锁定对应且尚未结束的尝试。
         if (taskId <= 0 || attemptNo < 1 || attemptNo > 3) { // 拒绝不合法的内部标识。
