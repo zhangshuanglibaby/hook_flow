@@ -54,6 +54,10 @@
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-webmvc</artifactId>
 		</dependency>
+		<dependency> <!-- 声明 P5-01 单次 HTTP 投递所需的正式依赖。 -->
+			<groupId>org.apache.httpcomponents.client5</groupId> <!-- 指定 Apache HttpClient 5 的依赖组。 -->
+			<artifactId>httpclient5</artifactId> <!-- 引入同步 HTTP 客户端；不在此指定版本，由现有 Spring Boot BOM 管理。 -->
+		</dependency> <!-- 结束此依赖声明。 -->
 		<dependency>
 			<groupId>org.flywaydb</groupId>
 			<artifactId>flyway-mysql</artifactId>

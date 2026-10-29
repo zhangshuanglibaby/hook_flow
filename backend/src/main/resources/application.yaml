@@ -35,3 +35,6 @@ logging: # 配置应用日志输出。
   structured: # 使用 Spring Boot 内置的结构化日志功能。
     format: # 指定日志的输出格式。
       console: logstash # 控制台每条日志输出为 JSON；MDC 中的 requestId 会成为 JSON 字段。
+  level: # 单独限制 HTTP 客户端的敏感调试日志。
+    org.apache.hc.client5.http.headers: "OFF" # 禁止记录包含投递签名的请求头。
+    org.apache.hc.client5.http.wire: "OFF" # 禁止记录包含请求头和请求体的原始网络数据。
