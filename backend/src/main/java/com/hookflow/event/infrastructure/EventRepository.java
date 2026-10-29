@@ -126,6 +126,12 @@ public class EventRepository { // 只封装 event 表的持久化操作。
                 status, terminalAt, event.id(), event.endpointId(), roundNo);
     }
 
+    public int markPaused(LockedEvent event, int roundNo, String expectedStatus) {
+        return jdbcTemplate.update("UPDATE event SET current_status = 'PAUSED', terminal_at = NULL "
+                        + "WHERE id = ? AND endpoint_id = ? AND latest_round_no = ? AND current_status = ?",
+                event.id(), event.endpointId(), roundNo, expectedStatus);
+    }
+
     public record DeliveryPayload(long eventPk, String eventId, String payloadJson) {
     }
 
