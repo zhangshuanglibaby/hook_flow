@@ -19,6 +19,7 @@ import java.time.Duration;
 import java.time.Instant;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
+import org.springframework.mock.env.MockEnvironment;
 
 class SingleDeliveryHttpClientTests {
     private static final Duration WAIT = Duration.ofSeconds(5);
@@ -31,14 +32,14 @@ class SingleDeliveryHttpClientTests {
     void sendsCanonicalUtf8BytesAndSignedHeadersOnce() throws Exception {
         MutableClock clock = new MutableClock(Instant.parse("2026-10-29T00:00:00Z"));
         try (TestHttpReceiver receiver = TestHttpReceiver.start();
-                SingleDeliveryHttpClient client = new SingleDeliveryHttpClient(clock, new DeliveryRequestSigner())) {
-            assertEquals(200, client.postOnce(receiver.uri().toString(), EVENT_ID,
+                SingleDeliveryHttpClient client = clientForSimulator(clock, receiver)) {
+            assertEquals(200, client.postSimulatorOnce(EVENT_ID,
                     BODY.getBytes(StandardCharsets.UTF_8), SECRET));
 
             ReceivedRequest received = receiver.awaitRequest(WAIT);
             assertNotNull(received);
             assertEquals("POST", received.method());
-            assertEquals("/receive", received.uri().getPath());
+            assertEquals(SimulatorInternalTargetRoute.PATH, received.uri().getPath());
             assertEquals(BODY, received.body());
             assertEquals("application/json", received.headers().getFirst("Content-Type"));
             assertEquals(EVENT_ID, received.headers().getFirst("X-HookFlow-Event-Id"));
@@ -55,14 +56,14 @@ class SingleDeliveryHttpClientTests {
     void recalculatesTimestampAndSignatureForEachExplicitAttempt() throws Exception {
         MutableClock clock = new MutableClock(Instant.parse("2026-10-29T00:00:00Z"));
         try (TestHttpReceiver receiver = TestHttpReceiver.start();
-                SingleDeliveryHttpClient client = new SingleDeliveryHttpClient(clock, new DeliveryRequestSigner())) {
-            assertEquals(200, client.postOnce(receiver.uri().toString(), EVENT_ID,
+                SingleDeliveryHttpClient client = clientForSimulator(clock, receiver)) {
+            assertEquals(200, client.postSimulatorOnce(EVENT_ID,
                     BODY.getBytes(StandardCharsets.UTF_8), SECRET));
             ReceivedRequest first = receiver.awaitRequest(WAIT);
             assertNotNull(first);
 
             clock.advance(Duration.ofSeconds(1));
-            assertEquals(200, client.postOnce(receiver.uri().toString(), EVENT_ID,
+            assertEquals(200, client.postSimulatorOnce(EVENT_ID,
                     BODY.getBytes(StandardCharsets.UTF_8), SECRET));
             ReceivedRequest second = receiver.awaitRequest(WAIT);
             assertNotNull(second);
@@ -78,11 +79,11 @@ class SingleDeliveryHttpClientTests {
     void returns302WithoutFollowingLocation() throws Exception {
         try (TestHttpReceiver source = TestHttpReceiver.start();
                 TestHttpReceiver destination = TestHttpReceiver.start();
-                SingleDeliveryHttpClient client = new SingleDeliveryHttpClient(
-                        new MutableClock(Instant.parse("2026-10-29T00:00:00Z")), new DeliveryRequestSigner())) {
+                SingleDeliveryHttpClient client = clientForSimulator(
+                        new MutableClock(Instant.parse("2026-10-29T00:00:00Z")), source)) {
             source.respondWithRedirect(destination.uri());
 
-            assertEquals(302, client.postOnce(source.uri().toString(), EVENT_ID,
+            assertEquals(302, client.postSimulatorOnce(EVENT_ID,
                     BODY.getBytes(StandardCharsets.UTF_8), SECRET));
             assertNotNull(source.awaitRequest(WAIT));
             assertNull(source.awaitRequest(NO_EXTRA_REQUEST));
@@ -93,11 +94,11 @@ class SingleDeliveryHttpClientTests {
     @Test
     void returnsErrorStatusWithoutAutomaticRetry() throws Exception {
         try (TestHttpReceiver receiver = TestHttpReceiver.start();
-                SingleDeliveryHttpClient client = new SingleDeliveryHttpClient(
-                        new MutableClock(Instant.parse("2026-10-29T00:00:00Z")), new DeliveryRequestSigner())) {
+                SingleDeliveryHttpClient client = clientForSimulator(
+                        new MutableClock(Instant.parse("2026-10-29T00:00:00Z")), receiver)) {
             receiver.respondWith(503, "try later");
 
-            assertEquals(503, client.postOnce(receiver.uri().toString(), EVENT_ID,
+            assertEquals(503, client.postSimulatorOnce(EVENT_ID,
                     BODY.getBytes(StandardCharsets.UTF_8), SECRET));
             assertNotNull(receiver.awaitRequest(WAIT));
             assertNull(receiver.awaitRequest(NO_EXTRA_REQUEST));
@@ -107,10 +108,10 @@ class SingleDeliveryHttpClientTests {
     @Test
     void doesNotSendWhenSigningSecretIsMissing() throws Exception {
         try (TestHttpReceiver receiver = TestHttpReceiver.start();
-                SingleDeliveryHttpClient client = new SingleDeliveryHttpClient(
-                        new MutableClock(Instant.parse("2026-10-29T00:00:00Z")), new DeliveryRequestSigner())) {
+                SingleDeliveryHttpClient client = clientForSimulator(
+                        new MutableClock(Instant.parse("2026-10-29T00:00:00Z")), receiver)) {
             IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
-                    () -> client.postOnce(receiver.uri().toString(), EVENT_ID,
+                    () -> client.postSimulatorOnce(EVENT_ID,
                             BODY.getBytes(StandardCharsets.UTF_8), ""));
             assertTrue(failure.getMessage().contains("签名密钥缺失"));
             assertNull(receiver.awaitRequest(NO_EXTRA_REQUEST));
@@ -124,9 +125,9 @@ class SingleDeliveryHttpClientTests {
         appender.start();
         root.addAppender(appender);
         try (TestHttpReceiver receiver = TestHttpReceiver.start();
-                SingleDeliveryHttpClient client = new SingleDeliveryHttpClient(
-                        new MutableClock(Instant.parse("2026-10-29T00:00:00Z")), new DeliveryRequestSigner())) {
-            assertEquals(200, client.postOnce(receiver.uri().toString(), EVENT_ID,
+                SingleDeliveryHttpClient client = clientForSimulator(
+                        new MutableClock(Instant.parse("2026-10-29T00:00:00Z")), receiver)) {
+            assertEquals(200, client.postSimulatorOnce(EVENT_ID,
                     BODY.getBytes(StandardCharsets.UTF_8), SECRET));
             ReceivedRequest received = receiver.awaitRequest(WAIT);
             assertNotNull(received);
@@ -137,6 +138,42 @@ class SingleDeliveryHttpClientTests {
         } finally {
             root.detachAppender(appender);
             appender.stop();
+        }
+    }
+
+    @Test
+    void simulatorConnectionDoesNotUseJvmSocksProxy() throws Exception {
+        String previousHost = System.getProperty("socksProxyHost");
+        String previousPort = System.getProperty("socksProxyPort");
+        try {
+            System.setProperty("socksProxyHost", "127.0.0.1");
+            System.setProperty("socksProxyPort", "1");
+            try (TestHttpReceiver receiver = TestHttpReceiver.start();
+                    SingleDeliveryHttpClient client = clientForSimulator(
+                            new MutableClock(Instant.parse("2026-10-29T00:00:00Z")), receiver)) {
+                assertEquals(200, client.postSimulatorOnce(EVENT_ID,
+                        BODY.getBytes(StandardCharsets.UTF_8), SECRET));
+                assertNotNull(receiver.awaitRequest(WAIT));
+            }
+        } finally {
+            restoreProperty("socksProxyHost", previousHost);
+            restoreProperty("socksProxyPort", previousPort);
+        }
+    }
+
+    private static SingleDeliveryHttpClient clientForSimulator(MutableClock clock,
+            TestHttpReceiver receiver) {
+        SimulatorInternalTargetRoute route = new SimulatorInternalTargetRoute(
+                new MockEnvironment().withProperty("local.server.port",
+                        Integer.toString(receiver.simulatorUri().getPort())));
+        return new SingleDeliveryHttpClient(clock, new DeliveryRequestSigner(), route);
+    }
+
+    private static void restoreProperty(String name, String previous) {
+        if (previous == null) {
+            System.clearProperty(name);
+        } else {
+            System.setProperty(name, previous);
         }
     }
 }

@@ -3,6 +3,7 @@ package com.hookflow.support; // 将接收端限定在测试源码中。
 import com.sun.net.httpserver.Headers; // 保存收到的 HTTP 请求头。
 import com.sun.net.httpserver.HttpExchange; // 读取请求并写回响应。
 import com.sun.net.httpserver.HttpServer; // 启动轻量级本机 HTTP 服务。
+import com.hookflow.delivery.infrastructure.SimulatorInternalTargetRoute; // 使用生产代码固定的内部路径。
 import java.io.IOException; // 声明网络操作可能失败。
 import java.net.InetSocketAddress; // 指定监听地址和随机端口。
 import java.net.URI; // 表示接收地址及请求路径。
@@ -22,6 +23,7 @@ public final class TestHttpReceiver implements AutoCloseable { // 可在测试�
     private TestHttpReceiver() throws IOException { // 只允许通过 start 方法启动。
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0); // 只监听本机，端口由系统分配。
         server.createContext("/receive", this::receive); // 将测试请求交给接收方法。
+        server.createContext(SimulatorInternalTargetRoute.PATH, this::receive); // 模拟 P8 尚未实现的固定内部接收路径。
         server.start(); // 开始接受真实 HTTP 连接。
     } // 构造方法结束。
 
@@ -32,6 +34,11 @@ public final class TestHttpReceiver implements AutoCloseable { // 可在测试�
     public URI uri() { // 提供测试客户端要访问的地址。
         return URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/receive"); // 使用实际分配的端口。
     } // 地址方法结束。
+
+    public URI simulatorUri() { // 提供仅供本机模拟器通道使用的固定路径。
+        return URI.create("http://127.0.0.1:" + server.getAddress().getPort()
+                + SimulatorInternalTargetRoute.PATH); // 使用同一随机端口及生产代码固定路径。
+    }
 
     public void respondWith(int status, String body) { // 配置后续请求收到的状态和正文。
         if (status < 200 || status > 599) { // 限定为可直接返回的最终响应状态。
