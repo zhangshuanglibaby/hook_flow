@@ -138,6 +138,32 @@ public class EventRepository { // 只封装 event 表的持久化操作。
                 status, event.id(), event.endpointId(), roundNo);
     }
 
+    public Optional<RedeliveryLocation> findRedeliveryLocation(String eventId) {
+        return jdbcTemplate.query("SELECT id, endpoint_id FROM event WHERE event_id = ?",
+                (rs, row) -> new RedeliveryLocation(rs.getLong("id"), rs.getLong("endpoint_id")),
+                eventId).stream().findFirst();
+    }
+
+    public Optional<RedeliveryEvent> lockForRedelivery(long eventPk) {
+        return jdbcTemplate.query("SELECT id, event_id, event_type, endpoint_id, latest_round_no, "
+                        + "current_status FROM event WHERE id = ? FOR UPDATE",
+                (rs, row) -> new RedeliveryEvent(rs.getLong("id"), rs.getString("event_id"),
+                        rs.getString("event_type"), rs.getLong("endpoint_id"),
+                        rs.getInt("latest_round_no"), rs.getString("current_status")), eventPk)
+                .stream().findFirst();
+    }
+
+    public int markRedelivered(RedeliveryEvent event, int nextRound) {
+        return jdbcTemplate.update("UPDATE event SET latest_round_no = ?, current_status = 'PENDING', "
+                        + "terminal_at = NULL WHERE id = ? AND endpoint_id = ? AND latest_round_no = ? "
+                        + "AND current_status = 'FINAL_FAILED'",
+                nextRound, event.id(), event.endpointId(), event.latestRoundNo());
+    }
+
+    public record RedeliveryLocation(long eventPk, long endpointId) { }
+    public record RedeliveryEvent(long id, String eventId, String eventType, long endpointId,
+            int latestRoundNo, String currentStatus) { }
+
     public record DeliveryPayload(long eventPk, String eventId, String payloadJson) {
     }
 
