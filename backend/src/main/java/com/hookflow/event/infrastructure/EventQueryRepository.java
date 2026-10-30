@@ -1,6 +1,7 @@
 package com.hookflow.event.infrastructure;
 
 import com.hookflow.common.api.PageParameters;
+import com.hookflow.event.application.EventDeliveryQueryAccess.Selection;
 import com.hookflow.event.application.EventQueryService.Filter;
 import com.hookflow.event.application.EventQueryService.Summary;
 import java.sql.ResultSet;
@@ -39,6 +40,21 @@ public class EventQueryRepository {
         return jdbc.query("SELECT id, " + SUMMARY + ", payload_json FROM event WHERE event_id = :eventId",
                 new MapSqlParameterSource("eventId", eventId),
                 (rs, row) -> new StoredDetail(rs.getLong("id"), summary(rs), rs.getString("payload_json")))
+                .stream().findFirst();
+    }
+
+    public Selection deliverySelection(
+            String eventType, Long endpointId, LocalDateTime from, LocalDateTime to) {
+        var filter = new Filter(null, eventType, null, endpointId, from, to);
+        var criteria = criteria(filter);
+        return new Selection(
+                "SELECT id AS event_pk, event_id, event_type, endpoint_id, latest_round_no FROM event" + criteria.sql(),
+                criteria.parameters().getValues());
+    }
+
+    public Optional<String> eventId(long eventPk) {
+        return jdbc.query("SELECT event_id FROM event WHERE id = :eventPk",
+                new MapSqlParameterSource("eventPk", eventPk), (rs, row) -> rs.getString("event_id"))
                 .stream().findFirst();
     }
 
