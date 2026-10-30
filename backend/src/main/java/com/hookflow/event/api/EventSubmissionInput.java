@@ -56,7 +56,11 @@ public final class EventSubmissionInput { // 保存通过接口字段校验的�
         if (node == null || !node.isTextual()) { // 缺失、null、数字、数组等都不是字符串。
             throw badRequest(); // 必填字段类型错误返回 400。
         }
-        String value = node.asString(); // 取得 JSON 字符串的实际内容。
+        return requiredText(node.asString());
+    }
+
+    static String requiredText(String value) {
+        if (value == null) throw badRequest();
         int length = value.codePointCount(0, value.length()); // 按 Unicode 码点而非 UTF-16 单元计数。
         if (length < 1 || length > 128 || value.isBlank()) { // 限制为 1～128 个码点，且不可全是空白。
             throw badRequest(); // 不在异常消息中回显事件 ID 或类型。
