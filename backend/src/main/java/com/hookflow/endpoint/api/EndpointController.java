@@ -89,11 +89,9 @@ public class EndpointController { // 提供列表、详情和当前安全范围�
 
     @GetMapping(path = "/api/v1/admin/endpoints", produces = MediaType.APPLICATION_JSON_VALUE) // 注册管理员接收端列表。
     public EndpointPageView list(@RequestParam(required = false) String page, @RequestParam(required = false) String size) { // 接收可选页码和条数。
-        int pageNumber = page == null ? 1 : positiveInt(page); // 缺省为第 1 页，提供时必须是正整数。
-        int pageSize = size == null ? 20 : positiveInt(size); // 缺省每页 20 条。
-        if (pageSize > 100) { // 执行接口契约规定的每页上限。
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST); // 超出上限返回统一 400。
-        } // 每页上限检查结束。
+        var pagination = com.hookflow.common.api.PageParameters.parse(page, size);
+        int pageNumber = pagination.page();
+        int pageSize = pagination.size();
         EndpointQueryService.EndpointPage result = queries.list(pageNumber, pageSize); // 查询总数及本页数据。
         List<EndpointView> items = result.items().stream().map(EndpointController::toView).toList(); // 仅映射可公开字段。
         return new EndpointPageView(result.page(), result.size(), result.total(), items); // 返回统一分页结构。
@@ -146,17 +144,6 @@ public class EndpointController { // 提供列表、详情和当前安全范围�
                 (String) request.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE))
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND)));
     }
-
-    private static int positiveInt(String value) { // 校验分页参数为十进制正整数。
-        if (!value.matches("[1-9][0-9]*")) { // 拒绝空值、负数、小数和其他字符。
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST); // 参数格式不合法。
-        } // 格式检查结束。
-        try { // 继续检查数字是否位于 Java int 范围内。
-            return Integer.parseInt(value); // 返回可用的正整数。
-        } catch (NumberFormatException exception) { // 数字过大时由解析器抛出异常。
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST); // 不回显用户输入。
-        } // 整数范围检查结束。
-    } // 分页整数解析结束。
 
     private static long positiveLong(String value) { // 校验接收端路径 ID 为十进制正整数。
         if (!value.matches("[1-9][0-9]*")) { // 拒绝零、负数、小数和非数字。

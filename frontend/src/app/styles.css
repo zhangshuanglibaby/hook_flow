@@ -196,20 +196,11 @@ summary::-webkit-details-marker { display: none; }
 .behavior-path strong { font-size: 13px; font-weight: 550; }
 .behavior-path p { font-size: 12px; color: var(--muted); margin: 7px 0 0; }
 .http-code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; background: #edf3fa; padding: 5px 8px; border-radius: 5px; }
-/* 登录不复用工作台外壳，保留原型双栏与冷蓝故事区域。 */
+/* 左侧背景图已包含品牌和插画；保持双栏，避免重复叠加文字。 */
 .login-layout { display: grid; grid-template-columns: 1fr 1fr; min-height: 100dvh; }
-.login-story { padding: 43px 55px 28px; background: #eaf3ff; border-right: 1px solid #cfdef0; display: flex; flex-direction: column; }
-.login-story .brand { padding: 0; font-size: 26px; }
-.login-story-content { max-width: 470px; width: 100%; margin: auto; padding: 70px 0; }
-.login-story h1 { font-size: clamp(30px, 3.1vw, 46px); line-height: 1.6; font-weight: 600; letter-spacing: -1px; margin-top: 24px; }
-.login-story-content > p { color: #5c7087; font-size: 15px; line-height: 2; margin: 19px 0 35px; }
-.login-route { display: flex; align-items: center; gap: 10px; color: #265d96; font-size: 12px; }
-.login-route > span { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
-.login-route > i { width: 28px; height: 1px; background: #a9c9ec; }
-.login-example { background: #ffffffa6; border: 1px solid #c4d9f1; border-radius: 12px; padding: 21px; margin-top: 28px; }
-.login-example > div { display: flex; justify-content: space-between; align-items: center; gap: 15px; }
-.login-example > p, .login-example small { color: var(--muted); font-size: 12px; }
-.login-story > footer, .login-form-area > footer { color: #5f7289; font-size: 12px; }
+/* contain 等比例完整展示图片，避免裁掉图片里的 Logo 和文字；空余区域使用浅蓝底色。 */
+.login-story { min-width: 0; background-color: #eaf3ff; background-position: center; background-repeat: no-repeat; background-size: contain; border-right: 1px solid #cfdef0; }
+.login-form-area > footer { color: #5f7289; font-size: 12px; }
 .login-form-area { display: flex; flex-direction: column; align-items: center; padding: 45px 35px 28px; background: var(--surface); min-width: 0; }
 .login-form-wrap { max-width: 360px; width: 100%; margin: auto; padding: 30px 0; }
 .login-form-wrap h2 { font-size: 28px; font-weight: 600; margin: 20px 0 10px; letter-spacing: -.6px; }
@@ -236,15 +227,12 @@ summary::-webkit-details-marker { display: none; }
   .overview-grid, .simulator-grid { gap: 18px; }
   .surface-panel { padding: 20px; }
   .section-heading { flex-wrap: wrap; }
-  .login-story { padding: 35px 30px 25px; }
-  .login-route { flex-wrap: wrap; }
 }
 @media (max-width: 950px) {
   .overview-grid, .simulator-grid { grid-template-columns: 1fr; }
   .metric-strip { grid-template-columns: 1fr 1fr; }
   .metric-cell:nth-child(3), .metric-cell:nth-child(4) { border-top: 1px solid var(--line); }
   .metric-cell:nth-child(3)::before { display: none; }
-  .login-route { display: none; }
 }
 @media (max-width: 800px) {
   .sidebar { width: 70px; padding: 24px 9px 0; }
