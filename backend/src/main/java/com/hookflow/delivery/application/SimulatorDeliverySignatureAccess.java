@@ -34,27 +34,33 @@ public class SimulatorDeliverySignatureAccess {
 
     @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
     public boolean verify(String eventId, String timestamp, byte[] rawBody, byte[] signature) {
+        return verifiedEventPk(eventId, timestamp, rawBody, signature) != null;
+    }
+
+    @Transactional(readOnly = true, isolation = Isolation.READ_COMMITTED)
+    public Long verifiedEventPk(String eventId, String timestamp, byte[] rawBody, byte[] signature) {
         if (signature == null || signature.length != 32) {
-            return false;
+            return null;
         }
         var event = events.find(eventId);
         if (event.isEmpty()) {
-            return false;
+            return null;
         }
         var identity = event.orElseThrow();
         var endpoint = endpoints.findById(identity.endpointId());
         if (endpoint.isEmpty() || endpoint.orElseThrow().targetType() != EndpointTargetType.SIMULATOR
                 || endpoint.orElseThrow().url() != null) {
-            return false;
+            return null;
         }
         try {
-            return snapshots.matches(identity.eventPk(), identity.latestRoundNo(), ciphertext -> {
+            boolean matched = snapshots.matches(identity.eventPk(), identity.latestRoundNo(), ciphertext -> {
                 String secret = secrets.decryptForSimulatorVerification(ciphertext);
                 byte[] expected = HexFormat.of().parseHex(signer.sign(eventId, timestamp, rawBody, secret));
                 return MessageDigest.isEqual(expected, signature);
             });
+            return matched ? identity.eventPk() : null;
         } catch (IllegalStateException | IllegalArgumentException exception) {
-            return false;
+            return null;
         }
     }
 }

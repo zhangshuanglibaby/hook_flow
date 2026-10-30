@@ -76,14 +76,14 @@ class SimulatorReceiveHttpIntegrationTests {
         final ArrayBlockingQueue<Receipt> receipts = new ArrayBlockingQueue<>(32);
         ObservedReception(com.hookflow.simulator.application.SimulatorProcessingService processing,
                 com.hookflow.simulator.application.SimulatorResponseDelay delay) { super(processing, delay); }
-        @Override public com.hookflow.simulator.domain.SimulatorConfiguration.Decision acknowledge(String eventId) {
+        @Override public com.hookflow.simulator.domain.SimulatorConfiguration.Decision acknowledge(String eventId, Long expectedPk) {
             var request = ((ServletRequestAttributes) RequestContextHolder.currentRequestAttributes()).getRequest();
             count.incrementAndGet();
             assertTrue(receipts.offer(new Receipt(request.getMethod(), request.getRequestURI(),
                     request.getHeader(HEADER_NAMES[0]), request.getLocalPort(),
                     (String) request.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE),
                     TransactionSynchronizationManager.isActualTransactionActive())));
-            return super.acknowledge(eventId);
+            return super.acknowledge(eventId, expectedPk);
         }
     }
 

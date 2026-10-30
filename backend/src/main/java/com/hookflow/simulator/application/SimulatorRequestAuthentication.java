@@ -23,7 +23,7 @@ public class SimulatorRequestAuthentication {
         this.signatures = signatures;
     }
 
-    public void authenticate(String eventId, String timestamp, String signature, byte[] rawBody) {
+    public long authenticate(String eventId, String timestamp, String signature, byte[] rawBody) {
         if (eventId == null || eventId.isBlank() || eventId.length() > 256
                 || eventId.codePointCount(0, eventId.length()) > 128
                 || eventId.codePoints().anyMatch(c -> Character.isISOControl(c)
@@ -42,10 +42,10 @@ public class SimulatorRequestAuthentication {
             throw unauthorized();
         }
         Duration skew = Duration.between(sentAt, clock.instant());
-        if (skew.compareTo(TIME_WINDOW) > 0 || skew.compareTo(TIME_WINDOW.negated()) < 0
-                || !signatures.verify(eventId, timestamp, rawBody, HexFormat.of().parseHex(signature))) {
-            throw unauthorized();
-        }
+        if (skew.compareTo(TIME_WINDOW) > 0 || skew.compareTo(TIME_WINDOW.negated()) < 0) throw unauthorized();
+        Long eventPk = signatures.verifiedEventPk(eventId, timestamp, rawBody, HexFormat.of().parseHex(signature));
+        if (eventPk == null) throw unauthorized();
+        return eventPk;
     }
 
     public static ResponseStatusException unauthorized() {

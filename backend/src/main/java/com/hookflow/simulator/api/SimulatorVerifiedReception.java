@@ -18,11 +18,13 @@ public class SimulatorVerifiedReception {
         this.delay = delay;
     }
 
-    public Decision acknowledge(String eventId) {
+    public Decision acknowledge(String eventId) { return acknowledge(eventId, null); }
+
+    public Decision acknowledge(String eventId, Long expectedPk) {
         if (TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("模拟器接收编排不能加入数据库事务");
         }
-        var decision = processing.receiveVerified(eventId);
+        var decision = processing.receiveVerified(eventId, expectedPk);
         delay.await(decision.delayMs());
         return decision;
     }

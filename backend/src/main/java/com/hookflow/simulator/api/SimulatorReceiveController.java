@@ -34,6 +34,7 @@ public class SimulatorReceiveController {
     @PostMapping(SimulatorInternalTargetRoute.PATH)
     public ResponseEntity<SimulatorVerifiedReception.Acknowledgement> receive(HttpServletRequest request) {
         String eventId;
+        long eventPk;
         try {
             eventId = singleHeader(request, "X-HookFlow-Event-Id", 256);
             String timestamp = singleHeader(request, "X-HookFlow-Timestamp", 40);
@@ -44,7 +45,7 @@ public class SimulatorReceiveController {
             } catch (IOException exception) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
             }
-            authentication.authenticate(eventId, timestamp, signature, body);
+            eventPk = authentication.authenticate(eventId, timestamp, signature, body);
         } catch (ResponseStatusException exception) {
             int status = exception.getStatusCode().value();
             if (status == 400 || status == 401) {
@@ -57,7 +58,7 @@ public class SimulatorReceiveController {
             }
             throw exception;
         }
-        var decision = reception.acknowledge(eventId);
+        var decision = reception.acknowledge(eventId, eventPk);
         if (decision.plannedStatus() == 500) {
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR);
         }

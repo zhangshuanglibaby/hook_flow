@@ -1,5 +1,6 @@
 package com.hookflow.simulator.application;
 
+import com.hookflow.event.application.EventRetentionService;
 import com.hookflow.simulator.domain.SimulatorConfiguration.Decision;
 import com.hookflow.simulator.infrastructure.SimulatorRepository;
 import java.time.Clock;
@@ -16,16 +17,24 @@ import org.springframework.transaction.annotation.Transactional;
 public class SimulatorProcessingService {
     private final SimulatorRepository repository;
     private final Clock clock;
+    private final EventRetentionService events;
 
-    public SimulatorProcessingService(SimulatorRepository repository, Clock clock) {
+    public SimulatorProcessingService(SimulatorRepository repository, Clock clock,
+            EventRetentionService events) {
         this.repository = repository;
         this.clock = clock;
+        this.events = events;
     }
 
     @Transactional(isolation = Isolation.READ_COMMITTED, timeout = 5)
-    public Decision receiveVerified(String eventId) {
+    public Decision receiveVerified(String eventId) { return receiveVerified(eventId, null); }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED, timeout = 5)
+    public Decision receiveVerified(String eventId, Long expectedPk) {
         var now = LocalDateTime.ofInstant(clock.instant().truncatedTo(ChronoUnit.MILLIS), ZoneOffset.UTC);
         var config = repository.configuration(now);
+        // 验签与处理是两个事务；共享事件锁避免保留清理后重建旧幂等状态。
+        if (!events.lockLiveForSimulator(eventId, expectedPk)) throw SimulatorRequestAuthentication.unauthorized();
         var state = repository.lockState(eventId);
         int count = Math.addExact(state.receivedCount(), 1);
         var decision = config.decide(count, state.processedAt() != null);
