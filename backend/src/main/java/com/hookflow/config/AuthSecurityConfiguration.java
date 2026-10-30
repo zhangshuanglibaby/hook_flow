@@ -78,6 +78,7 @@ public class AuthSecurityConfiguration { // 定义 HookFlow 的 HTTP 安全边�
         http.authorizeHttpRequests(authorize -> authorize // 按路径和角色配置访问权限。
                 .requestMatchers(HttpMethod.POST, "/api/v1/auth/login").permitAll() // 登录接口必须允许未认证请求。
                 .requestMatchers(HttpMethod.GET, "/actuator/health").permitAll() // 最小健康检查保持公开。
+                .requestMatchers(HttpMethod.POST, com.hookflow.delivery.infrastructure.SimulatorInternalTargetRoute.PATH).permitAll()
                 .requestMatchers(HttpMethod.POST, "/api/v1/auth/logout").hasRole("ADMIN") // 登出只允许当前管理员 Token 调用。
                 .requestMatchers("/api/v1/admin/**").hasRole("ADMIN") // 所有管理接口只允许管理员角色。
                 .requestMatchers(HttpMethod.POST, "/api/v1/events").hasRole("BUSINESS") // 业务事件入口只允许已验证的业务 Key 身份。

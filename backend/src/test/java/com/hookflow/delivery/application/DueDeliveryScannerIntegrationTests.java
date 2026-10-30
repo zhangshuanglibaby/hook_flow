@@ -37,7 +37,7 @@ class DueDeliveryScannerIntegrationTests {
     }
 
     @Test
-    void normalProfileSchedulesClaimAndRecordsMissingP8ReceiverAsHttpFailure() throws Exception {
+    void normalProfileSchedulesClaimAndAuthenticatesFormalSimulatorOverHttp() throws Exception {
         try (ConfigurableApplicationContext context = startNormal()) {
             JdbcTemplate jdbc = context.getBean(JdbcTemplate.class);
             long actor = jdbc.queryForObject("SELECT id FROM app_user WHERE username = 'due-scanner-test-admin'",
@@ -55,11 +55,11 @@ class DueDeliveryScannerIntegrationTests {
             while ("DELIVERING".equals(taskStatus(jdbc, taskId)) && System.nanoTime() < deadline) {
                 Thread.sleep(50);
             }
-            assertEquals("FINAL_FAILED", taskStatus(jdbc, taskId));
+            assertEquals("SUCCESS", taskStatus(jdbc, taskId));
             assertEquals(1L, jdbc.queryForObject(
-                    "SELECT COUNT(*) FROM delivery_attempt WHERE task_id = ? AND result = 'HTTP_FAILURE' "
-                            + "AND http_status BETWEEN 400 AND 499", Long.class, taskId));
-            assertEquals("FINAL_FAILED", jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM delivery_attempt WHERE task_id = ? AND result = 'SUCCESS' "
+                            + "AND http_status = 202", Long.class, taskId));
+            assertEquals("SUCCESS", jdbc.queryForObject(
                     "SELECT current_status FROM event WHERE id = (SELECT event_pk FROM delivery_task WHERE id = ?)",
                     String.class, taskId));
         }

@@ -32,6 +32,11 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler { // 复
         if (exception instanceof TargetNotAllowedException) { // 只识别外部目标安全异常，不改动其他 422 错误。
             responseBody = new ApiError("TARGET_NOT_ALLOWED", "外部目标地址不被允许", responseBody.requestId()); // 使用契约代码并保留原请求 ID。
         } // 目标安全异常映射结束。
+        if (status.value() == 401 && request instanceof org.springframework.web.context.request.ServletWebRequest servlet
+                && com.hookflow.delivery.infrastructure.SimulatorInternalTargetRoute.PATH
+                        .equals(servlet.getRequest().getRequestURI())) {
+            responseBody = new ApiError("UNAUTHORIZED", "模拟器签名认证失败", responseBody.requestId());
+        }
         return super.handleExceptionInternal(exception, responseBody, headers, status, request); // 保留框架状态和响应头，返回安全错误体。
     } // 框架异常处理结束。
 

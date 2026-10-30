@@ -138,6 +138,15 @@ public class EventRepository { // 只封装 event 表的持久化操作。
                 status, event.id(), event.endpointId(), roundNo);
     }
 
+    public Optional<SimulatorIdentity> findSimulatorIdentity(String eventId) {
+        return jdbcTemplate.query("SELECT id, event_id, endpoint_id, latest_round_no FROM event WHERE event_id = ?",
+                (rs, row) -> new SimulatorIdentity(rs.getLong("id"), rs.getString("event_id"),
+                        rs.getLong("endpoint_id"), rs.getInt("latest_round_no")), eventId)
+                .stream().filter(row -> row.eventId().equals(eventId)).findFirst();
+    }
+
+    public record SimulatorIdentity(long eventPk, String eventId, long endpointId, int latestRoundNo) { }
+
     public Optional<RedeliveryLocation> findRedeliveryLocation(String eventId) {
         return jdbcTemplate.query("SELECT id, endpoint_id FROM event WHERE event_id = ?",
                 (rs, row) -> new RedeliveryLocation(rs.getLong("id"), rs.getLong("endpoint_id")),
