@@ -129,7 +129,8 @@ class SimulatorRequestAuthenticationTests {
     @Test
     void missingBlankDuplicateAndOverlongHeadersNeverEnterAcknowledgement() {
         var acknowledgement = mock(SimulatorVerifiedReception.class);
-        var controller = new SimulatorReceiveController(authentication, acknowledgement);
+        var rejected = mock(com.hookflow.simulator.application.SimulatorRejectedReception.class);
+        var controller = new SimulatorReceiveController(authentication, acknowledgement, rejected);
         String[] names = {"X-HookFlow-Event-Id", "X-HookFlow-Timestamp", "X-HookFlow-Signature"};
         for (String name : names) {
             for (String mode : new String[] {"missing", "blank", "duplicate", "long", "comma"}) {

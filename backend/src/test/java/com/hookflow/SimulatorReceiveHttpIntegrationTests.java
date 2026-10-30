@@ -64,20 +64,26 @@ class SimulatorReceiveHttpIntegrationTests {
     @org.springframework.boot.test.context.TestConfiguration(proxyBeanMethods = false)
     static class TestConfiguration {
         @Bean @Primary MutableClock testClock() { return new MutableClock(NOW); }
-        @Bean @Primary ObservedReception observedReception() { return new ObservedReception(); }
+        @Bean @Primary ObservedReception observedReception(
+                com.hookflow.simulator.application.SimulatorProcessingService processing,
+                com.hookflow.simulator.application.SimulatorResponseDelay delay) {
+            return new ObservedReception(processing, delay);
+        }
     }
 
     static class ObservedReception extends SimulatorVerifiedReception {
         final AtomicInteger count = new AtomicInteger();
         final ArrayBlockingQueue<Receipt> receipts = new ArrayBlockingQueue<>(32);
-        @Override public Acknowledgement acknowledge() {
+        ObservedReception(com.hookflow.simulator.application.SimulatorProcessingService processing,
+                com.hookflow.simulator.application.SimulatorResponseDelay delay) { super(processing, delay); }
+        @Override public com.hookflow.simulator.domain.SimulatorConfiguration.Decision acknowledge(String eventId) {
             var request = ((ServletRequestAttributes) RequestContextHolder.currentRequestAttributes()).getRequest();
             count.incrementAndGet();
             assertTrue(receipts.offer(new Receipt(request.getMethod(), request.getRequestURI(),
                     request.getHeader(HEADER_NAMES[0]), request.getLocalPort(),
                     (String) request.getAttribute(RequestIdFilter.REQUEST_ID_ATTRIBUTE),
                     TransactionSynchronizationManager.isActualTransactionActive())));
-            return super.acknowledge();
+            return super.acknowledge(eventId);
         }
     }
 
@@ -94,22 +100,22 @@ class SimulatorReceiveHttpIntegrationTests {
     }
 
     @Test
-    void validSignatureAcknowledgesAuthenticationOnlyAndTamperingCannotEnterReception() throws Exception {
+    void validSignatureProcessesOnceAndTamperingCannotEnterReception() throws Exception {
         try (Fixture f = new Fixture()) {
             long endpoint = f.endpoint("SIMULATOR");
             String eventId = f.event(endpoint);
             String secret = f.secret(eventId);
             String state = f.databaseFingerprint();
             HttpResponse<String> accepted = f.signed(eventId, NOW.toString(), BODY, secret);
-            assertEquals(202, accepted.statusCode(), accepted.body());
+            assertEquals(200, accepted.statusCode(), accepted.body());
             JsonNode body = f.mapper.readTree(accepted.body());
             assertEquals(2, body.size());
             assertTrue(body.path("signatureVerified").asBoolean());
-            assertFalse(body.path("businessProcessed").asBoolean());
+            assertTrue(body.path("businessProcessed").asBoolean());
             assertEquals(1, f.reception.count.get());
             assertEquals(state, f.databaseFingerprint());
-            assertEquals(0L, f.count("simulator_event_state"));
-            assertEquals(0L, f.count("simulator_request_log"));
+            assertEquals(1L, f.count("simulator_event_state"));
+            assertEquals(1L, f.count("simulator_request_log"));
 
             Map<String, String> headers = f.headers(eventId, NOW.toString(), BODY, secret);
             for (byte[] changed : List.of("{ \"amount\":1}".getBytes(StandardCharsets.UTF_8),
@@ -179,7 +185,7 @@ class SimulatorReceiveHttpIntegrationTests {
             String secret = f.secret(id);
             String before = f.databaseFingerprint();
             for (Instant timestamp : List.of(NOW.minusSeconds(300), NOW.plusSeconds(300))) {
-                assertEquals(202, f.signed(id, timestamp.toString(), BODY, secret).statusCode());
+                assertEquals(200, f.signed(id, timestamp.toString(), BODY, secret).statusCode());
             }
             for (Instant timestamp : List.of(NOW.minusSeconds(300).minusNanos(1), NOW.plusSeconds(300).plusNanos(1))) {
                 f.error(f.signed(id, timestamp.toString(), BODY, secret), 401, "UNAUTHORIZED");
@@ -190,7 +196,7 @@ class SimulatorReceiveHttpIntegrationTests {
             }
             byte[] exact = ("\"" + "a".repeat(SimulatorReceiveController.MAX_BODY_BYTES - 2) + "\"")
                     .getBytes(StandardCharsets.UTF_8);
-            assertEquals(202, f.signed(id, NOW.toString(), exact, secret).statusCode());
+            assertEquals(200, f.signed(id, NOW.toString(), exact, secret).statusCode());
             byte[] oversized = java.util.Arrays.copyOf(exact, exact.length + 1);
             var headers = f.headers(id, NOW.toString(), oversized, secret);
             HttpRequest.Builder chunked = HttpRequest.newBuilder(URI.create(f.base + SimulatorInternalTargetRoute.PATH))
@@ -266,13 +272,13 @@ class SimulatorReceiveHttpIntegrationTests {
                 headers.put("X-HookFlow-Round", "999999");
                 headers.put("X-HookFlow-Endpoint-Id", "999999");
                 headers.put("X-HookFlow-Signing-Secret", "caller-cannot-select-secret");
-                assertEquals(202, f.receive(headers, BODY).statusCode());
+                assertEquals(200, f.receive(headers, BODY).statusCode());
             }
             assertEquals(before, f.databaseFingerprint());
             f.jdbc.update("UPDATE endpoint SET signing_secret_ciphertext = ? WHERE id = ?", new byte[] {0}, endpoint);
             before = f.databaseFingerprint();
-            assertEquals(202, f.signed(id, NOW.toString(), BODY, original).statusCode());
-            assertEquals(202, f.signed(id, NOW.toString(), BODY, replacement).statusCode());
+            assertEquals(200, f.signed(id, NOW.toString(), BODY, original).statusCode());
+            assertEquals(200, f.signed(id, NOW.toString(), BODY, replacement).statusCode());
             assertEquals(before, f.databaseFingerprint());
         }
     }
@@ -308,7 +314,7 @@ class SimulatorReceiveHttpIntegrationTests {
                 redelivery.redeliver(roundsId, actor, UUID.randomUUID().toString());
             }
             before = f.databaseFingerprint();
-            assertEquals(202, f.signed(roundsId, NOW.toString(), BODY, original).statusCode());
+            assertEquals(200, f.signed(roundsId, NOW.toString(), BODY, original).statusCode());
             assertEquals(before, f.databaseFingerprint());
             f.jdbc.update("UPDATE delivery_task SET secret_ciphertext_snapshot = ? WHERE event_pk = "
                     + "(SELECT id FROM event WHERE event_id = ?) AND round_no = 17", new byte[] {0}, roundsId);
@@ -341,17 +347,17 @@ class SimulatorReceiveHttpIntegrationTests {
             assertEquals("SUCCESS", f.jdbc.queryForObject("SELECT status FROM delivery_task WHERE id = ?", String.class, task));
             assertEquals(1, f.jdbc.queryForObject("SELECT attempt_count FROM delivery_task WHERE id = ?", Integer.class, task));
             assertEquals(1L, f.jdbc.queryForObject("SELECT COUNT(*) FROM delivery_attempt WHERE task_id = ? "
-                    + "AND attempt_no = 1 AND result = 'SUCCESS' AND http_status = 202 AND ended_at IS NOT NULL",
+                    + "AND attempt_no = 1 AND result = 'SUCCESS' AND http_status = 200 AND ended_at IS NOT NULL",
                     Long.class, task));
-            assertEquals("{\"signatureVerified\":true,\"businessProcessed\":false}",
+            assertEquals("{\"signatureVerified\":true,\"businessProcessed\":true}",
                     f.jdbc.queryForObject("SELECT response_excerpt FROM delivery_attempt WHERE task_id = ?", String.class, task));
             assertEquals(1L, f.jdbc.queryForObject("SELECT COUNT(*) FROM event WHERE event_id = ? "
                     + "AND latest_round_no = 1 AND current_status = 'SUCCESS' AND terminal_at IS NOT NULL", Long.class, id));
             f.context.getBean(DueDeliveryScanner.class).scanDueTasks();
             assertEquals(1, f.reception.count.get());
             assertEquals(audits, f.count("audit_log"));
-            assertEquals(0L, f.count("simulator_event_state"));
-            assertEquals(0L, f.count("simulator_request_log"));
+            assertEquals(1L, f.count("simulator_event_state"));
+            assertEquals(1L, f.count("simulator_request_log"));
         }
     }
 
@@ -424,7 +430,25 @@ class SimulatorReceiveHttpIntegrationTests {
         }
 
         HttpResponse<String> receive(Map<String, String> headers, byte[] body) throws Exception { return send(request(headers, body).build()); }
-        HttpResponse<String> send(HttpRequest request) throws Exception { return client.send(request, HttpResponse.BodyHandlers.ofString()); }
+        HttpResponse<String> send(HttpRequest request) throws Exception {
+            var state = jdbc.queryForList("SELECT * FROM simulator_event_state ORDER BY event_id");
+            long logs = count("simulator_request_log");
+            var response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 400 || response.statusCode() == 401) {
+                assertEquals(state, jdbc.queryForList("SELECT * FROM simulator_event_state ORDER BY event_id"));
+                if (request.method().equals("POST") && request.uri().getPath().equals(SimulatorInternalTargetRoute.PATH)) {
+                    assertEquals(logs + 1, count("simulator_request_log"));
+                    var row = jdbc.queryForMap("SELECT * FROM simulator_request_log ORDER BY id DESC LIMIT 1");
+                    assertNull(row.get("event_id")); assertNull(row.get("config_mode"));
+                    assertEquals(false, row.get("signature_valid"));
+                    assertEquals(false, row.get("duplicate_processed"));
+                    assertEquals(response.statusCode(), ((Number) row.get("planned_status")).intValue());
+                    assertEquals(java.time.LocalDateTime.ofInstant(context.getBean(MutableClock.class).instant(),
+                            java.time.ZoneOffset.UTC), row.get("received_at"));
+                } else assertEquals(logs, count("simulator_request_log"));
+            }
+            return response;
+        }
         HttpResponse<String> api(String path, String body, String admin) throws Exception {
             var request = HttpRequest.newBuilder(URI.create(base + path)).timeout(Duration.ofSeconds(10))
                     .header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(body));
@@ -454,8 +478,7 @@ class SimulatorReceiveHttpIntegrationTests {
         long count(String table) { return jdbc.queryForObject("SELECT COUNT(*) FROM " + table, Long.class); }
         String databaseFingerprint() throws Exception {
             var rows = new LinkedHashMap<String, Object>();
-            for (String table : List.of("endpoint", "event", "delivery_task", "delivery_attempt", "audit_log",
-                    "simulator_config", "simulator_event_state", "simulator_request_log")) {
+            for (String table : List.of("endpoint", "event", "delivery_task", "delivery_attempt", "audit_log")) {
                 rows.put(table, jdbc.queryForList("SELECT * FROM " + table + " ORDER BY 1"));
             }
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(mapper.writeValueAsBytes(rows)));

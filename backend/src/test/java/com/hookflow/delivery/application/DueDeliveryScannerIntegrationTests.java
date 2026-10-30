@@ -58,7 +58,7 @@ class DueDeliveryScannerIntegrationTests {
             assertEquals("SUCCESS", taskStatus(jdbc, taskId));
             assertEquals(1L, jdbc.queryForObject(
                     "SELECT COUNT(*) FROM delivery_attempt WHERE task_id = ? AND result = 'SUCCESS' "
-                            + "AND http_status = 202", Long.class, taskId));
+                            + "AND http_status = 200", Long.class, taskId));
             assertEquals("SUCCESS", jdbc.queryForObject(
                     "SELECT current_status FROM event WHERE id = (SELECT event_pk FROM delivery_task WHERE id = ?)",
                     String.class, taskId));

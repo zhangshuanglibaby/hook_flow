@@ -2,6 +2,9 @@ package com.hookflow.simulator.api;
 
 import com.hookflow.delivery.infrastructure.SimulatorInternalTargetRoute;
 import com.hookflow.simulator.application.SimulatorRequestAuthentication;
+import com.hookflow.simulator.application.SimulatorRejectedReception;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import jakarta.servlet.http.HttpServletRequest;
 import java.io.IOException;
 import java.io.InputStream;
@@ -17,27 +20,48 @@ import org.springframework.web.server.ResponseStatusException;
 public class SimulatorReceiveController {
     public static final int MAX_BODY_BYTES = 256 * 1024;
     private final SimulatorRequestAuthentication authentication;
+    private static final Logger log = LoggerFactory.getLogger(SimulatorReceiveController.class);
     private final SimulatorVerifiedReception reception;
+    private final SimulatorRejectedReception rejected;
 
     public SimulatorReceiveController(SimulatorRequestAuthentication authentication,
-            SimulatorVerifiedReception reception) {
+            SimulatorVerifiedReception reception, SimulatorRejectedReception rejected) {
         this.authentication = authentication;
         this.reception = reception;
+        this.rejected = rejected;
     }
 
     @PostMapping(SimulatorInternalTargetRoute.PATH)
     public ResponseEntity<SimulatorVerifiedReception.Acknowledgement> receive(HttpServletRequest request) {
-        String eventId = singleHeader(request, "X-HookFlow-Event-Id", 256);
-        String timestamp = singleHeader(request, "X-HookFlow-Timestamp", 40);
-        String signature = singleHeader(request, "X-HookFlow-Signature", 64);
-        byte[] body;
+        String eventId;
         try {
-            body = readBody(request.getInputStream());
-        } catch (IOException exception) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
+            eventId = singleHeader(request, "X-HookFlow-Event-Id", 256);
+            String timestamp = singleHeader(request, "X-HookFlow-Timestamp", 40);
+            String signature = singleHeader(request, "X-HookFlow-Signature", 64);
+            byte[] body;
+            try {
+                body = readBody(request.getInputStream());
+            } catch (IOException exception) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST);
+            }
+            authentication.authenticate(eventId, timestamp, signature, body);
+        } catch (ResponseStatusException exception) {
+            int status = exception.getStatusCode().value();
+            if (status == 400 || status == 401) {
+                try {
+                    rejected.record(status);
+                } catch (RuntimeException recordingFailure) {
+                    // 安全记录不可用不能改变原有认证错误优先级。
+                    log.warn("simulatorRejectionRecordFailed exceptionType={}", recordingFailure.getClass().getSimpleName());
+                }
+            }
+            throw exception;
         }
-        authentication.authenticate(eventId, timestamp, signature, body);
-        return ResponseEntity.accepted().body(reception.acknowledge());
+        var decision = reception.acknowledge(eventId);
+        if (decision.plannedStatus() == 500) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR);
+        }
+        return ResponseEntity.ok(new SimulatorVerifiedReception.Acknowledgement(true, true));
     }
 
     static byte[] readBody(InputStream input) throws IOException {

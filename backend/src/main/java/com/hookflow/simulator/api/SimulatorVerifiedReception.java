@@ -1,14 +1,30 @@
 package com.hookflow.simulator.api;
 
+import com.hookflow.simulator.application.SimulatorProcessingService;
+import com.hookflow.simulator.application.SimulatorResponseDelay;
+import com.hookflow.simulator.domain.SimulatorConfiguration.Decision;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 @Profile("!skeleton")
 @Component
 public class SimulatorVerifiedReception {
-    // P8-01 只确认签名认证；模式处理和持久化幂等尚未接入。
-    public Acknowledgement acknowledge() {
-        return new Acknowledgement(true, false);
+    private final SimulatorProcessingService processing;
+    private final SimulatorResponseDelay delay;
+
+    public SimulatorVerifiedReception(SimulatorProcessingService processing, SimulatorResponseDelay delay) {
+        this.processing = processing;
+        this.delay = delay;
+    }
+
+    public Decision acknowledge(String eventId) {
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("模拟器接收编排不能加入数据库事务");
+        }
+        var decision = processing.receiveVerified(eventId);
+        delay.await(decision.delayMs());
+        return decision;
     }
 
     public record Acknowledgement(boolean signatureVerified, boolean businessProcessed) { }
