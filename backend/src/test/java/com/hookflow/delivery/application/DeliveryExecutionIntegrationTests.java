@@ -98,12 +98,21 @@ class DeliveryExecutionIntegrationTests {
         }
     }
 
+    @org.springframework.boot.test.context.TestConfiguration(proxyBeanMethods = false)
+    static class ReceiverRoute {
+        @org.springframework.context.annotation.Bean @org.springframework.context.annotation.Primary
+        SimulatorInternalTargetRoute executionReceiverRoute(org.springframework.core.env.Environment environment) {
+            return new SimulatorInternalTargetRoute(new org.springframework.mock.env.MockEnvironment()
+                    .withProperty("local.server.port", environment.getRequiredProperty("p1001.receiver.port")));
+        }
+    }
+
     private static ConfigurableApplicationContext start(TestHttpReceiver receiver) {
         byte[] key = new byte[32];
         new SecureRandom().nextBytes(key);
-        return new SpringApplicationBuilder(HookflowBackendApplication.class).run(
+        return new SpringApplicationBuilder(HookflowBackendApplication.class, ReceiverRoute.class).run(
                 "--spring.profiles.active=p2-login-test",
-                "--server.port=" + receiver.simulatorUri().getPort(),
+                "--server.port=0", "--p1001.receiver.port=" + receiver.simulatorUri().getPort(),
                 "--DB_URL=" + MYSQL.getJdbcUrl(), "--DB_USERNAME=" + MYSQL.getUsername(),
                 "--DB_PASSWORD=" + MYSQL.getPassword(), "--HOOKFLOW_ADMIN_USERNAME=execution-test-admin",
                 "--HOOKFLOW_ADMIN_PASSWORD=execution-test-password",

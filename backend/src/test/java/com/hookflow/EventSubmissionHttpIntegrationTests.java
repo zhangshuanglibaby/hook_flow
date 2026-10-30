@@ -142,6 +142,35 @@ class EventSubmissionHttpIntegrationTests {
         }
     }
 
+    @Test
+    void exactUtf8LimitAndUnicodeNumericIdentityAreEnforcedOverFormalHttp() throws Exception {
+        try (var context = start(); var client = HttpClient.newBuilder().connectTimeout(java.time.Duration.ofSeconds(2)).build()) {
+            var mapper = context.getBean(JsonMapper.class); var jdbc = context.getBean(JdbcTemplate.class);
+            String base = base(context); String key = rotate(client, mapper, base, login(client, mapper, base));
+            long actor = jdbc.queryForObject("SELECT id FROM app_user WHERE username='event-http-test-admin'", Long.class);
+            long endpoint = context.getBean(EndpointSecretProvisioningService.class).createSimulator("byte-limit", 5000, actor, UUID.randomUUID().toString()).id();
+            String id = "limit-" + UUID.randomUUID();
+            String empty = request(id, endpoint, "\"\"");
+            int remaining = EventRequestJsonParser.MAX_REQUEST_BYTES - empty.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            String body = request(id, endpoint, "\"" + "中".repeat(remaining / 3) + "x".repeat(remaining % 3) + "\"");
+            assertEquals(262144, body.getBytes(java.nio.charset.StandardCharsets.UTF_8).length);
+            String url = base + "/api/v1/events";
+            assertEquals(202, post(client, url, null, key, body).statusCode());
+            assertEquals(200, post(client, url, null, key, body).statusCode());
+            long before = jdbc.queryForObject("SELECT COUNT(*) FROM event", Long.class);
+            assertError(mapper, post(client, url, null, key, body + " "), 400, "INVALID_REQUEST");
+            assertEquals(before, jdbc.queryForObject("SELECT COUNT(*) FROM event", Long.class));
+            String identity = " 原值-é-" + UUID.randomUUID() + " ";
+            String exact = "{\"v\":123456789012345678901234567890.100000000000000001}";
+            assertEquals(202, post(client, url, null, key, request(identity, endpoint, exact)).statusCode());
+            assertEquals(200, post(client, url, null, key, request(identity, endpoint, "{\"v\":123456789012345678901234567890.1000000000000000010}")).statusCode());
+            assertError(mapper, post(client, url, null, key, request(identity, endpoint, "{\"v\":123456789012345678901234567890.100000000000000002}")), 409, "CONFLICT");
+            for (String distinct : java.util.List.of(identity.strip(), identity.replace("é", "é"), identity.replace("原值", "原値")))
+                assertEquals(202, post(client, url, null, key, request(distinct, endpoint, exact)).statusCode());
+            assertEquals(identity, jdbc.queryForObject("SELECT event_id FROM event WHERE event_id=?", String.class, identity));
+        }
+    }
+
     private static String request(String eventId, long endpointId, String payload) {
         return "{\"eventId\":\"" + eventId + "\",\"eventType\":\"order.paid\","
                 + "\"endpointId\":" + endpointId + ",\"payload\":" + payload + "}";
@@ -150,6 +179,7 @@ class EventSubmissionHttpIntegrationTests {
     private static HttpResponse<String> post(HttpClient client, String url,
             String adminToken, String apiKey, String json) throws Exception {
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
+                .timeout(java.time.Duration.ofSeconds(8))
                 .header("Content-Type", "application/json");
         if (adminToken != null) {
             builder.header("Authorization", "Bearer " + adminToken);

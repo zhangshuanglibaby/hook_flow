@@ -48,6 +48,23 @@ class SimulatorProcessingIntegrationTests {
         @Bean @Primary MutableClock simulatorClock() { return new MutableClock(NOW); }
         @Bean @Primary ObservedRepository observedRepository(JdbcTemplate jdbc) { return new ObservedRepository(jdbc); }
         @Bean @Primary ObservedDelay observedDelay() { return new ObservedDelay(); }
+        @Bean RouteProbe simulatorRouteProbe() { return new RouteProbe(); }
+        @Bean org.springframework.boot.web.server.WebServerFactoryCustomizer<org.springframework.boot.tomcat.servlet.TomcatServletWebServerFactory> simulatorRouteDiagnostics(RouteProbe probe) {
+            return factory -> factory.addEngineValves(probe);
+        }
+    }
+
+    static class RouteProbe extends org.apache.catalina.valves.ValveBase {
+        final java.util.concurrent.ArrayBlockingQueue<String> requests = new java.util.concurrent.ArrayBlockingQueue<>(128);
+        RouteProbe() { super(true); }
+        @Override public void invoke(org.apache.catalina.connector.Request request, org.apache.catalina.connector.Response response) throws java.io.IOException, jakarta.servlet.ServletException {
+            try { getNext().invoke(request, response); }
+            finally {
+                requests.offer("localPort=" + request.getLocalPort() + " serverPort=" + request.getServerPort()
+                        + " status=" + response.getStatus() + " contextMapped=" + (request.getContext() != null)
+                        + " wrapperMapped=" + (request.getWrapper() != null));
+            }
+        }
     }
 
     static class ObservedRepository extends SimulatorRepository {
@@ -285,6 +302,16 @@ class SimulatorProcessingIntegrationTests {
         }
     }
 
+    @Test void repeatedColdContextsAndRestartsKeepFormalLoginAndEndpointRoutesOnTheirOwnPort() throws Exception {
+        for (int cycle = 0; cycle < 8; cycle++) {
+            try (var fixture = new Fixture()) {
+                assertNotNull(fixture.event(5000));
+                fixture.restart();
+                assertNotNull(fixture.event(5000));
+            }
+        }
+    }
+
     @Test void concurrentEmptyConfigurationInitializationUsesRealSingletonConstraintWithoutOverwritingWinner() throws Exception {
         try (var f = new Fixture()) {
             String a = f.event(5000), b = f.event(5000);
@@ -382,7 +409,11 @@ class SimulatorProcessingIntegrationTests {
         final HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
         ConfigurableApplicationContext context; JdbcTemplate jdbc; JsonMapper mapper; MutableClock clock;
         String base, token;
-        Fixture() throws Exception { byte[] bytes = new byte[32]; new SecureRandom().nextBytes(bytes); key = Base64.getEncoder().encodeToString(bytes); start(); }
+        Fixture() throws Exception {
+            byte[] bytes = new byte[32]; new SecureRandom().nextBytes(bytes); key = Base64.getEncoder().encodeToString(bytes);
+            try { start(); }
+            catch (Exception | Error failure) { client.close(); if (context != null) context.close(); throw failure; }
+        }
         void start() throws Exception {
             context = new SpringApplicationBuilder(HookflowBackendApplication.class, Configuration.class).run(
                     "--spring.profiles.active=p2-login-test", "--server.port=0", "--HOOKFLOW_REDIS_ENABLED=false",
@@ -391,7 +422,27 @@ class SimulatorProcessingIntegrationTests {
                     "--spring.datasource.hikari.connection-init-sql=SET SESSION innodb_lock_wait_timeout=4");
             jdbc = context.getBean(JdbcTemplate.class); mapper = context.getBean(JsonMapper.class); clock = context.getBean(MutableClock.class);
             base = "http://127.0.0.1:" + context.getEnvironment().getRequiredProperty("local.server.port");
-            token = mapper.readTree(api("/api/v1/auth/login", "{\"username\":\"p802-admin\",\"password\":\"p802-admin-password\"}", false).body()).path("token").asString();
+            var login = api("/api/v1/auth/login", "{\"username\":\"p802-admin\",\"password\":\"p802-admin-password\"}", false);
+            assertEquals(200, login.statusCode(), () -> diagnostic("login", login));
+            token = mapper.readTree(login.body()).path("token").asString();
+            assertNotNull(token, "成功登录必须包含Token");
+            assertFalse(token.isBlank(), "成功登录必须包含非空Token");
+        }
+        String diagnostic(String operation, HttpResponse<String> response) {
+            var web = (org.springframework.boot.web.server.context.WebServerApplicationContext) context;
+            var mappings = context.getBean("requestMappingHandlerMapping", org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping.class);
+            boolean endpointRoute = mappings.getHandlerMethods().values().stream().anyMatch(method -> method.getBeanType().getName().equals("com.hookflow.endpoint.api.EndpointController"));
+            var servlet = ((org.springframework.web.context.WebApplicationContext) context).getServletContext();
+            String requestId = response.headers().firstValue("X-Request-Id").filter(value -> value.matches("[0-9a-f-]{36}")).orElse("absent");
+            return operation + " status=" + response.statusCode() + " active=" + context.isActive()
+                    + " configuredPort=" + URI.create(base).getPort() + " actualPort=" + web.getWebServer().getPort()
+                    + " responsePort=" + response.uri().getPort() + " endpointRoute=" + endpointRoute
+                    + " dispatcherRegistered=" + (servlet.getServletRegistration("dispatcherServlet") != null)
+                    + " requestId=" + requestId + " httpVersion=" + response.version()
+                    + " bodyBytes=" + response.body().getBytes(StandardCharsets.UTF_8).length
+                    + " engineRequests=" + context.getBean(RouteProbe.class).requests
+                    + " proxy=" + client.proxy().map(value -> value.getClass().getName()).orElse("default")
+                    + " selectedProxyTypes=" + java.net.ProxySelector.getDefault().select(URI.create(base)).stream().map(value -> value.type().name()).toList();
         }
         void restart() throws Exception { context.close(); start(); }
         void configure(String mode, int n, int ms) {
@@ -401,7 +452,7 @@ class SimulatorProcessingIntegrationTests {
         }
         String event(int timeout) throws Exception {
             var endpoint = api("/api/v1/admin/endpoints", "{\"name\":\"p802-" + UUID.randomUUID() + "\",\"targetType\":\"SIMULATOR\",\"timeoutMs\":" + timeout + "}", true);
-            assertEquals(201, endpoint.statusCode(), endpoint.body());
+            assertEquals(201, endpoint.statusCode(), () -> diagnostic("create-endpoint", endpoint));
             var event = api("/api/v1/admin/events/test", "{\"eventType\":\"order.paid\",\"endpointId\":" + mapper.readTree(endpoint.body()).path("id").asLong() + ",\"payload\":{\"amount\":1}}", true);
             assertEquals(202, event.statusCode(), event.body()); return mapper.readTree(event.body()).path("eventId").asString();
         }

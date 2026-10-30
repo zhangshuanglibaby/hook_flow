@@ -50,6 +50,11 @@ class DeliveryRecoveryIntegrationTests {
         @Bean @Primary MutableClock recoveryTestClock() {
             return testClock;
         }
+        @Bean @Primary com.hookflow.delivery.infrastructure.SimulatorInternalTargetRoute recoveryReceiverRoute(org.springframework.core.env.Environment environment) {
+            int port = environment.getProperty("p1001.receiver.port", Integer.class, 0);
+            return new com.hookflow.delivery.infrastructure.SimulatorInternalTargetRoute(port == 0 ? environment
+                    : new org.springframework.mock.env.MockEnvironment().withProperty("local.server.port", Integer.toString(port)));
+        }
     }
 
     @AfterEach
@@ -407,7 +412,7 @@ class DeliveryRecoveryIntegrationTests {
         new SecureRandom().nextBytes(key);
         var builder = new SpringApplicationBuilder(HookflowBackendApplication.class, ClockOverride.class);
         if (suppressScheduling) builder.profiles("p2-login-test");
-        return builder.run("--server.port=" + port, "--DB_URL=" + MYSQL.getJdbcUrl(),
+        return builder.run("--server.port=0", "--p1001.receiver.port=" + port, "--DB_URL=" + MYSQL.getJdbcUrl(),
                 "--DB_USERNAME=" + MYSQL.getUsername(), "--DB_PASSWORD=" + MYSQL.getPassword(),
                 "--HOOKFLOW_ADMIN_USERNAME=recovery-test-admin",
                 "--HOOKFLOW_ADMIN_PASSWORD=recovery-test-password",

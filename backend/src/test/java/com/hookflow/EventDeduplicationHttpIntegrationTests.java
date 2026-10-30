@@ -204,6 +204,78 @@ class EventDeduplicationHttpIntegrationTests {
         }
     }
 
+    @Test
+    void uncommittedWinnerForcesRealUniqueIndexWaitThenConflictReadsCommittedWinner() throws Exception {
+        orderedUncommittedWinner(false);
+    }
+
+    @Test
+    void uncommittedIdenticalWinnerBlocksEndpointThenDuplicateReadsOriginalCommittedData() throws Exception {
+        orderedUncommittedWinner(true);
+    }
+
+    private static void orderedUncommittedWinner(boolean identical) throws Exception {
+        try (var context = start()) {
+            var fixture = fixture(context);
+            try (var client = fixture.client()) {
+                long firstEndpoint = endpoint(context, fixture, true).id();
+                long secondEndpoint = identical ? firstEndpoint : endpoint(context, fixture, true).id();
+                String id = "ordered-dedupe-" + UUID.randomUUID();
+                var payload = new EventPayloadCanonicalizer().canonicalize(fixture.mapper().readTree("{\"value\":1}"));
+                var jdbc = fixture.jdbc();
+                var observer = new JdbcTemplate(new org.springframework.jdbc.datasource.DriverManagerDataSource(MYSQL.getJdbcUrl(), "root", MYSQL.getPassword()));
+                observer.setQueryTimeout(2);
+                var tx = new org.springframework.transaction.support.TransactionTemplate(context.getBean(org.springframework.transaction.PlatformTransactionManager.class));
+                tx.setIsolationLevel(org.springframework.transaction.TransactionDefinition.ISOLATION_READ_COMMITTED); tx.setTimeout(15);
+                var ready = new CountDownLatch(1); var release = new CountDownLatch(1);
+                var blocker = new java.util.concurrent.atomic.AtomicReference<Long>();
+                var eventPk = new java.util.concurrent.atomic.AtomicReference<Long>();
+                var pool = new java.util.concurrent.ThreadPoolExecutor(2, 2, 0, TimeUnit.MILLISECONDS, new java.util.concurrent.ArrayBlockingQueue<>(2));
+                var winner = pool.submit(() -> tx.execute(status -> {
+                    blocker.set(jdbc.queryForObject("SELECT CONNECTION_ID()", Long.class));
+                    var created = context.getBean(EventCreationService.class).create(id, "order.paid", firstEndpoint, payload).orElseThrow();
+                    eventPk.set(jdbc.queryForObject("SELECT id FROM event WHERE event_id=?", Long.class, id));
+                    ready.countDown();
+                    try { assertTrue(release.await(8, TimeUnit.SECONDS)); }
+                    catch (InterruptedException exception) { Thread.currentThread().interrupt(); throw new IllegalStateException(exception); }
+                    return created;
+                }));
+                try {
+                    assertTrue(ready.await(5, TimeUnit.SECONDS));
+                    assertEquals(0L, observer.queryForObject("SELECT COUNT(*) FROM event WHERE event_id=?", Long.class, id));
+                    var loser = pool.submit(() -> {
+                        try { return context.getBean(EventSubmissionService.class).submit(id, "order.paid", secondEndpoint, payload); }
+                        catch (ResponseStatusException exception) { return exception.getStatusCode(); }
+                    });
+                    String table = identical ? "endpoint" : "event";
+                    String index = identical ? "PRIMARY" : "uk_event_event_id";
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4);
+                    boolean waiting = false;
+                    while (System.nanoTime() < deadline && !waiting) {
+                        // INSERT 隐式唯一锁用引擎事务和同表意向锁关联连接，不信任被物化记录的 THREAD_ID。
+                        waiting = observer.queryForObject("SELECT COUNT(*) FROM performance_schema.data_lock_waits w "
+                                + "JOIN performance_schema.data_locks r ON r.ENGINE=w.ENGINE AND r.ENGINE_LOCK_ID=w.REQUESTING_ENGINE_LOCK_ID "
+                                + "JOIN performance_schema.data_locks bt ON bt.ENGINE=w.ENGINE AND bt.ENGINE_TRANSACTION_ID=w.BLOCKING_ENGINE_TRANSACTION_ID AND bt.OBJECT_NAME=r.OBJECT_NAME AND bt.LOCK_TYPE='TABLE' "
+                                + "JOIN performance_schema.threads b ON b.THREAD_ID=bt.THREAD_ID "
+                                + "WHERE b.PROCESSLIST_ID=? AND r.OBJECT_SCHEMA=DATABASE() AND r.OBJECT_NAME=? AND r.INDEX_NAME=? AND r.LOCK_TYPE='RECORD' AND r.LOCK_DATA=?",
+                                Long.class, blocker.get(), table, index, identical ? Long.toString(firstEndpoint) : "'" + id + "', " + eventPk.get()) > 0;
+                        if (!waiting) { assertFalse(loser.isDone(), "竞争者不能在获胜事务提交前完成"); Thread.sleep(10); }
+                    }
+                    assertTrue(waiting, "必须确认预期索引和记录的真实数据库等待"); assertFalse(loser.isDone());
+                    assertEquals(0L, observer.queryForObject("SELECT COUNT(*) FROM event WHERE event_id=?", Long.class, id));
+                    release.countDown(); var created = winner.get(5, TimeUnit.SECONDS); var result = loser.get(5, TimeUnit.SECONDS);
+                    if (identical) {
+                        var duplicate = org.junit.jupiter.api.Assertions.assertInstanceOf(EventSubmissionService.SubmissionResult.class, result);
+                        assertTrue(duplicate.duplicate()); assertEquals(created.createdAt(), duplicate.createdAt());
+                        assertEquals(firstEndpoint, duplicate.endpointId()); assertEquals("PENDING", duplicate.status());
+                    } else assertEquals(HttpStatus.CONFLICT, result);
+                    assertOnlyFirstTask(jdbc, id);
+                    assertEquals(firstEndpoint, jdbc.queryForObject("SELECT endpoint_id FROM event WHERE event_id=?", Long.class, id));
+                } finally { release.countDown(); pool.shutdownNow(); assertTrue(pool.awaitTermination(10, TimeUnit.SECONDS)); }
+            }
+        }
+    }
+
     private static List<HttpResponse<String>> concurrently(Fixture fixture,
             String left, String right) throws Exception {
         CountDownLatch ready = new CountDownLatch(2);
@@ -290,6 +362,7 @@ class EventDeduplicationHttpIntegrationTests {
 
     private static HttpResponse<String> submit(Fixture fixture, String body) throws Exception {
         HttpRequest request = HttpRequest.newBuilder(URI.create(fixture.base() + "/api/v1/events"))
+                .timeout(java.time.Duration.ofSeconds(8))
                 .header("Content-Type", "application/json")
                 .header("X-HookFlow-Api-Key", fixture.apiKey())
                 .POST(HttpRequest.BodyPublishers.ofString(body)).build();

@@ -278,6 +278,60 @@ class RetentionIntegrationTests {
         }
     }
 
+    @Test void cleanupWinningEventLockRejectsAlreadyVerifiedReceptionAfterCommitWithoutRecreatingState() throws Exception {
+        try (var f = new Fixture(false)) {
+            long endpoint = f.endpoint(); long event = f.event("cleanup-first", endpoint); f.process("cleanup-first"); f.finish("cleanup-first", 200);
+            f.clock.setInstant(OLD.plus(Duration.ofDays(30)));
+            var ready = new CountDownLatch(1); var release = new CountDownLatch(1);
+            var blocker = new AtomicReference<Long>(); var waiter = new AtomicReference<Long>();
+            var workers = new ThreadPoolExecutor(2, 2, 0, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(2));
+            var deleting = workers.submit(() -> f.tx().execute(status -> {
+                blocker.set(f.jdbc.queryForObject("SELECT CONNECTION_ID()", Long.class));
+                assertTrue(f.retention().deleteExpired(event)); ready.countDown(); waitLatch(release); return true;
+            }));
+            try {
+                assertTrue(ready.await(4, TimeUnit.SECONDS));
+                var reception = workers.submit(() -> {
+                    try {
+                        f.tx().executeWithoutResult(status -> {
+                            waiter.set(f.jdbc.queryForObject("SELECT CONNECTION_ID()", Long.class));
+                            f.context.getBean(SimulatorProcessingService.class).receiveVerified("cleanup-first", event);
+                        });
+                        return 200;
+                    } catch (org.springframework.web.server.ResponseStatusException exception) { return exception.getStatusCode().value(); }
+                });
+                f.race().awaitWait(waiter, blocker, "event", event, reception);
+                assertEquals(1, f.observer.queryForObject("SELECT COUNT(*) FROM event WHERE id=?", Long.class, event));
+                assertEquals(1, f.observer.queryForObject("SELECT COUNT(*) FROM simulator_event_state WHERE event_id='cleanup-first'", Long.class));
+                release.countDown(); assertEquals(true, deleting.get(5, TimeUnit.SECONDS)); assertEquals(401, reception.get(5, TimeUnit.SECONDS));
+                assertEquals(0, f.count("event")); assertEquals(0, f.count("simulator_event_state"));
+                assertEquals(1, f.count("simulator_request_log")); assertEquals(1, f.count("endpoint"));
+            } finally { release.countDown(); workers.shutdownNow(); assertTrue(workers.awaitTermination(8, TimeUnit.SECONDS)); }
+        }
+    }
+
+    @Test void independentLogFailuresDoNotBlockOtherBatchesOrLeakDatabaseDiagnostics() throws Exception {
+        for (String unavailable : List.of("simulator_request_log", "audit_log")) {
+            try (var f = new Fixture(false)) {
+                long endpoint = f.endpoint(); long event = f.event("log-failure-" + unavailable, endpoint); f.process("log-failure-" + unavailable); f.finish("log-failure-" + unavailable, 200);
+                f.clock.setInstant(OLD.plus(Duration.ofDays(30)));
+                var logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(RetentionCleanup.class);
+                var logs = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>(); logs.start(); logger.addAppender(logs);
+                f.jdbc.execute("RENAME TABLE " + unavailable + " TO p1001_unavailable");
+                try {
+                    assertDoesNotThrow(() -> f.cleanup().cleanExpired());
+                    assertEquals(0, f.count("event")); assertEquals(0, f.count("delivery_task")); assertEquals(0, f.count("delivery_attempt"));
+                    assertEquals(0, f.count(unavailable.equals("audit_log") ? "simulator_request_log" : "audit_log"));
+                    assertEquals(1, logs.list.size()); assertNull(logs.list.getFirst().getThrowableProxy());
+                    assertTrue(logs.list.getFirst().getFormattedMessage().startsWith(unavailable.equals("audit_log") ? "auditRetentionFailed exceptionType=" : "simulatorRetentionFailed exceptionType="));
+                    assertFalse(logs.list.getFirst().getFormattedMessage().contains("p1001_unavailable"));
+                    assertFalse(logs.list.getFirst().getFormattedMessage().contains("DELETE"));
+                } finally { f.jdbc.execute("RENAME TABLE p1001_unavailable TO " + unavailable); logger.detachAppender(logs); logs.stop(); }
+                f.cleanup().cleanExpired(); assertEquals(0, f.count(unavailable));
+            }
+        }
+    }
+
     @Test void formalSchedulerRunsWithoutManualCleanupAndCallerTransactionIsRejected() throws Exception {
         try (var f = new Fixture(true)) {
             long endpoint = f.endpoint(); f.event("scheduled", endpoint); f.finish("scheduled", 200); f.clock.setInstant(OLD.plus(Duration.ofDays(30)));
