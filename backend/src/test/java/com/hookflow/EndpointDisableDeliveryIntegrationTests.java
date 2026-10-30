@@ -47,7 +47,7 @@ class EndpointDisableDeliveryIntegrationTests {
     }
 
     @Test void actualInFlightHttpCanFinishButPausedUnsentTasksIgnoreScansAndRepeatedRedisSignals() throws Exception {
-        for (int status : List.of(200,500)) {
+        for (int status : List.of(200,500,404,503)) {
             CountDownLatch received=new CountDownLatch(1),respond=new CountDownLatch(1);
             AtomicInteger requests=new AtomicInteger();
             var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
@@ -73,10 +73,14 @@ class EndpointDisableDeliveryIntegrationTests {
                 List<BoundedDeliveryExecutor.Reservation> held=new ArrayList<>();
                 for(int i=0;i<20;i++)held.add(executor.reserve().orElseThrow());
                 String active=id();creator.create(active,"order.paid",ep,payload).orElseThrow();
+                long activeTask=taskId(jdbc,active);
+                if(status==503) {
+                    // 历史策略差异夹具仅允许一次；随后领取和 HTTP 完成仍走正式执行链。
+                    jdbc.update("UPDATE delivery_task SET max_attempts=1 WHERE id=?",activeTask);
+                }
                 // 首条任务仅在显式释放一个执行许可后开始，后续未发任务一直没有领取容量。
                 held.removeLast().close();context.getBean(DueDeliveryScanner.class).scanDueTasks();
                 assertTrue(received.await(5,TimeUnit.SECONDS));
-                long activeTask=taskId(jdbc,active);
                 var claimed=jdbc.queryForMap("SELECT claim_token,lease_until FROM delivery_task WHERE id=?",activeTask);
                 assertEquals("DELIVERING",taskState(jdbc,activeTask));
                 assertEquals("STARTED",jdbc.queryForObject("SELECT result FROM delivery_attempt WHERE task_id=?",String.class,activeTask));
@@ -98,7 +102,7 @@ class EndpointDisableDeliveryIntegrationTests {
                 }
                 for(int i=0;i<4;i++)context.getBean(DueDeliveryScanner.class).scanDueTasks();
                 respond.countDown();
-                String expected=status==200?"SUCCESS":"PAUSED";
+                String expected=status==200?"SUCCESS":status==500?"PAUSED":"FINAL_FAILED";
                 await(()->expected.equals(taskState(jdbc,activeTask)));
                 assertEquals(expected,jdbc.queryForObject("SELECT current_status FROM event WHERE event_id=?",String.class,active));
                 assertEquals(status==200?"SUCCESS":"HTTP_FAILURE",jdbc.queryForObject("SELECT result FROM delivery_attempt WHERE task_id=?",String.class,activeTask));

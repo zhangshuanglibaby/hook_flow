@@ -272,38 +272,9 @@ class DeliveryRedeliveryIntegrationTests {
     }
 
     Object ordered(long endpoint, Supplier<?> winner, Supplier<?> loser, Runnable whileWaiting) throws Exception {
-        CountDownLatch changed = new CountDownLatch(1), release = new CountDownLatch(1);
-        ExecutorService workers = Executors.newFixedThreadPool(2);
-        AtomicReference<Long> blocker = new AtomicReference<>(), waiter = new AtomicReference<>();
-        Future<?> first = workers.submit(() -> transaction().execute(tx -> {
-            blocker.set(jdbc.queryForObject("SELECT CONNECTION_ID()", Long.class));
-            jdbc.queryForObject("SELECT id FROM endpoint WHERE id=? FOR UPDATE", Long.class, endpoint);
-            Object result = winner.get(); changed.countDown();
-            try { assertTrue(release.await(10, TimeUnit.SECONDS)); }
-            catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IllegalStateException(e); }
-            return result;
-        }));
-        try {
-            assertTrue(changed.await(10, TimeUnit.SECONDS));
-            Future<?> second = workers.submit(() -> transaction().execute(tx -> {
-                waiter.set(jdbc.queryForObject("SELECT CONNECTION_ID()", Long.class));
-                Object result = loser.get();
-                if (result instanceof HttpStatus || result instanceof RuntimeException) tx.setRollbackOnly();
-                return result;
-            }));
-            JdbcTemplate root = new JdbcTemplate(new DriverManagerDataSource(MYSQL.getJdbcUrl(), "root", MYSQL.getPassword()));
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4); boolean waiting = false;
-            while (System.nanoTime() < deadline) {
-                if (waiter.get() != null && root.queryForObject("SELECT COUNT(*) FROM performance_schema.data_lock_waits w "
-                        + "JOIN performance_schema.data_locks l ON l.ENGINE_LOCK_ID=w.REQUESTING_ENGINE_LOCK_ID AND l.ENGINE=w.ENGINE "
-                        + "JOIN performance_schema.threads r ON r.THREAD_ID=w.REQUESTING_THREAD_ID "
-                        + "JOIN performance_schema.threads b ON b.THREAD_ID=w.BLOCKING_THREAD_ID "
-                        + "WHERE l.OBJECT_NAME='endpoint' AND r.PROCESSLIST_ID=? AND b.PROCESSLIST_ID=?", Long.class, waiter.get(), blocker.get()) > 0) { waiting = true; break; }
-                Thread.sleep(10);
-            }
-            assertTrue(waiting, "必须确认指定连接之间的真实 endpoint 行锁等待"); assertFalse(second.isDone());
-            whileWaiting.run(); release.countDown(); first.get(10, TimeUnit.SECONDS); return second.get(10, TimeUnit.SECONDS);
-        } finally { release.countDown(); workers.shutdownNow(); assertTrue(workers.awaitTermination(15, TimeUnit.SECONDS)); }
+        var observer = new JdbcTemplate(new DriverManagerDataSource(MYSQL.getJdbcUrl(), "root", MYSQL.getPassword()));
+        return new com.hookflow.support.MySqlRowLockRace(jdbc, observer, DeliveryRedeliveryIntegrationTests::transaction)
+                .ordered(endpoint, winner, loser, whileWaiting);
     }
     static TransactionTemplate transaction() {
         var tx = new TransactionTemplate(context.getBean(PlatformTransactionManager.class));

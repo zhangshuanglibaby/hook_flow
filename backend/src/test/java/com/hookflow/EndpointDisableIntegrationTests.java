@@ -264,30 +264,9 @@ class EndpointDisableIntegrationTests {
     }
 
     Object ordered(long endpoint, Supplier<?> winner, Supplier<?> loser) throws Exception {
-        CountDownLatch changed=new CountDownLatch(1), release=new CountDownLatch(1), entering=new CountDownLatch(1);
-        ExecutorService workers=Executors.newFixedThreadPool(2);
-        var first=workers.submit(()->transaction().execute(tx->{
-            jdbc.queryForObject("SELECT id FROM endpoint WHERE id=? FOR UPDATE",Long.class,endpoint);
-            Object result=winner.get(); changed.countDown();
-            try {assertTrue(release.await(10,TimeUnit.SECONDS));} catch(InterruptedException e){Thread.currentThread().interrupt();throw new IllegalStateException(e);}
-            return result;
-        }));
-        try {
-            assertTrue(changed.await(10,TimeUnit.SECONDS));
-            var second=workers.submit(()->{entering.countDown();return loser.get();});
-            assertTrue(entering.await(5,TimeUnit.SECONDS));
-            JdbcTemplate root=new JdbcTemplate(new DriverManagerDataSource(MYSQL.getJdbcUrl(),"root",MYSQL.getPassword()));
-            long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(4);
-            boolean waiting=false;
-            while(System.nanoTime()<deadline) {
-                if(root.queryForObject("SELECT COUNT(*) FROM performance_schema.data_lock_waits",Long.class)>0){waiting=true;break;}
-                Thread.sleep(10);
-            }
-            assertTrue(waiting,"实际 MySQL 行锁等待必须在释放获胜事务之前出现");
-            assertFalse(second.isDone());
-            release.countDown();first.get(10,TimeUnit.SECONDS);
-            return second.get(10,TimeUnit.SECONDS);
-        } finally { release.countDown();workers.shutdownNow();assertTrue(workers.awaitTermination(15,TimeUnit.SECONDS)); }
+        var observer = new JdbcTemplate(new DriverManagerDataSource(MYSQL.getJdbcUrl(), "root", MYSQL.getPassword()));
+        return new com.hookflow.support.MySqlRowLockRace(jdbc, observer, EndpointDisableIntegrationTests::transaction)
+                .ordered(endpoint, winner, loser, () -> { });
     }
     static TransactionTemplate transaction() {
         var tx=new TransactionTemplate(context.getBean(PlatformTransactionManager.class));

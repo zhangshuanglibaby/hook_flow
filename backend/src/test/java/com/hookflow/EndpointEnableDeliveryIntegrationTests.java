@@ -114,6 +114,35 @@ class EndpointEnableDeliveryIntegrationTests {
         }
     }
 
+    @Test void expiredStartedPausesThenEnableAndFormalHttpRetryPreserveUnknownHistory() throws Exception {
+        try (var receiver = new Receiver(false); var context = start(false)) {
+            var jdbc = context.getBean(JdbcTemplate.class); long ep = endpoint(context); long task = create(context, ep);
+            var claim = context.getBean(DeliveryClaimService.class).claim(task).orElseThrow();
+            // 模拟领取提交后执行器退出，STARTED 未取得可确认的 HTTP 结果。
+            disable(context, ep); CLOCK.setInstant(claim.leaseUntil().toInstant(ZoneOffset.UTC));
+            assertTrue(context.getBean(DeliveryRecoveryService.class).recover(task, claim.claimToken()));
+            consistent(jdbc, task, "PAUSED");
+            var unknown = jdbc.queryForMap("SELECT * FROM delivery_attempt WHERE task_id=?", task);
+            assertEquals("UNKNOWN", unknown.get("result")); assertEquals("EXECUTOR_INTERRUPTED", unknown.get("error_code"));
+            assertNull(unknown.get("http_status")); assertNull(unknown.get("response_excerpt"));
+            LocalDateTime due = time(jdbc, task, "resume_due_at"); assertEquals(claim.leaseUntil().plusSeconds(10), due);
+            scanRepeatedly(context); assertEquals(0, receiver.requests.get());
+            enable(context, ep); consistent(jdbc, task, "WAIT_RETRY"); assertEquals(due, time(jdbc, task, "next_run_at"));
+            CLOCK.setInstant(due.toInstant(ZoneOffset.UTC).minusMillis(1)); scanRepeatedly(context);
+            assertEquals(0, receiver.requests.get()); assertEquals(1, attemptCount(jdbc, task));
+            CLOCK.setInstant(due.toInstant(ZoneOffset.UTC)); scanRepeatedly(context); await(() -> "SUCCESS".equals(state(jdbc, task)));
+            consistent(jdbc, task, "SUCCESS"); assertEquals(1, receiver.requests.get()); assertEquals(2, attemptCount(jdbc, task));
+            assertEquals(2, jdbc.queryForObject("SELECT attempt_count FROM delivery_task WHERE id=?", Integer.class, task));
+            assertEquals(List.of("UNKNOWN", "SUCCESS"), jdbc.queryForList("SELECT result FROM delivery_attempt WHERE task_id=? ORDER BY attempt_no", String.class, task));
+            assertEquals(200, jdbc.queryForObject("SELECT http_status FROM delivery_attempt WHERE task_id=? AND attempt_no=2", Integer.class, task));
+            DeliveryRedeliveryIntegrationTests.same(unknown, jdbc.queryForMap("SELECT * FROM delivery_attempt WHERE task_id=? AND attempt_no=1", task));
+            assertFalse(context.getBean(DeliveryCompletionService.class).complete(task, 1, claim.claimToken(),
+                    com.hookflow.delivery.infrastructure.SingleDeliveryHttpResult.fromHttpResponse(200, "late")));
+            assertFalse(context.getBean(DeliveryRecoveryService.class).recover(task, claim.claimToken()));
+            consistent(jdbc, task, "SUCCESS");
+        }
+    }
+
     static void assertSnapshot(Map<String,Object> before, Map<String,Object> after) {
         for (String column : List.of("target_type_snapshot", "url_snapshot", "timeout_ms_snapshot", "max_attempts", "retry_delay_1_s", "retry_delay_2_s", "attempt_count"))
             assertEquals(before.get(column), after.get(column), column);

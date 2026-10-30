@@ -293,31 +293,9 @@ class EndpointEnableIntegrationTests {
     }
 
     Object ordered(long endpoint, Supplier<?> winner, Supplier<?> loser, Runnable whileWaiting) throws Exception {
-        CountDownLatch changed = new CountDownLatch(1), release = new CountDownLatch(1), entering = new CountDownLatch(1);
-        ExecutorService workers = Executors.newFixedThreadPool(2);
-        var first = workers.submit(() -> transaction().execute(tx -> {
-            jdbc.queryForObject("SELECT id FROM endpoint WHERE id=? FOR UPDATE", Long.class, endpoint);
-            Object result = winner.get(); changed.countDown();
-            try { assertTrue(release.await(10, TimeUnit.SECONDS)); }
-            catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IllegalStateException(e); }
-            return result;
-        }));
-        try {
-            assertTrue(changed.await(10, TimeUnit.SECONDS));
-            var second = workers.submit(() -> { entering.countDown(); return loser.get(); });
-            assertTrue(entering.await(5, TimeUnit.SECONDS));
-            JdbcTemplate root = new JdbcTemplate(new DriverManagerDataSource(MYSQL.getJdbcUrl(), "root", MYSQL.getPassword()));
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(4); boolean waiting = false;
-            while (System.nanoTime() < deadline) {
-                if (root.queryForObject("SELECT COUNT(*) FROM performance_schema.data_lock_waits w "
-                        + "JOIN performance_schema.data_locks l ON l.ENGINE_LOCK_ID=w.REQUESTING_ENGINE_LOCK_ID "
-                        + "AND l.ENGINE=w.ENGINE WHERE l.OBJECT_NAME='endpoint'", Long.class) > 0) { waiting = true; break; }
-                Thread.sleep(10);
-            }
-            assertTrue(waiting, "必须确认等待真实 MySQL endpoint 行锁后才释放"); assertFalse(second.isDone());
-            whileWaiting.run(); release.countDown(); first.get(10, TimeUnit.SECONDS);
-            return second.get(10, TimeUnit.SECONDS);
-        } finally { release.countDown(); workers.shutdownNow(); assertTrue(workers.awaitTermination(15, TimeUnit.SECONDS)); }
+        var observer = new JdbcTemplate(new DriverManagerDataSource(MYSQL.getJdbcUrl(), "root", MYSQL.getPassword()));
+        return new com.hookflow.support.MySqlRowLockRace(jdbc, observer, EndpointEnableIntegrationTests::transaction)
+                .ordered(endpoint, winner, loser, whileWaiting);
     }
     static TransactionTemplate transaction() {
         var tx = new TransactionTemplate(context.getBean(PlatformTransactionManager.class));
