@@ -3,6 +3,7 @@
 // 检查必填文本的 Unicode 字符数；密码不去空格，避免悄悄改变用户输入。
 export function textError(value: string, max: number): string | undefined {
   // 使用展开语法按 Unicode 码点计数，比字符串 length 更接近用户理解的字符数。
+  // 例如一个中文字符或 emoji 都按用户看到的一个字符参与长度校验。
   const count = [...value].length;
   // 空文本或超长时返回就地错误；有效时不返回错误。
   return count < 1 || count > max ? `请输入 1–${max} 个字符。` : undefined;
@@ -31,7 +32,7 @@ export function urlError(value: string): string | undefined {
     // 转小写后比较主机名，避免大小写绕过本地提示。
     const host = url.hostname.toLowerCase();
     // 拒绝非 HTTPS、凭据和片段，以符合当前外部接收端格式约束。
-    if (url.protocol !== 'https:' || url.username || url.password || url.hash) return '请输入不含凭据或片段的 HTTPS URL。';
+    if (url.protocol !== 'https:' || url.username || url.password || value.includes('?') || value.includes('#') || [...value].length > 2048) return '请输入不含凭据、查询串或片段的 HTTPS URL（最多 2048 字符）。';
     // 拒绝内部名称与 IP 字面量；这只是输入体验，不是 SSRF 防护。
     if (!host.includes('.') || host.endsWith('.localhost') || host.endsWith('.local') || host.startsWith('[') || /^\d+(\.\d+){3}$/.test(host)) return '请填写公开域名，不使用 localhost、内部域名或 IP 地址。';
     // 域名格式可用时不显示错误。

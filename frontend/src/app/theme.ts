@@ -5,7 +5,7 @@ import type { ThemeConfig } from 'antd';
 export const tokens = {
   canvas: '#F5F8FC', surface: '#FFFFFF', ink: '#203047', muted: '#5D6E82',
   brand: '#1958A6', action: '#CFE4FF', hover: '#B8D7FF', soft: '#EDF5FF',
-  line: '#DFE7F0', focus: '#3877C0',
+  line: '#DFE7F0', focus: '#3877C0', mask: 'rgba(66, 85, 110, 0.28)',
 } as const;
 // Ant Design 的主色用于选中与焦点；Button 单独使用浅底，避免深蓝实心按钮。
 export const theme: ThemeConfig = {
@@ -13,12 +13,13 @@ export const theme: ThemeConfig = {
     colorPrimary: tokens.brand, colorInfo: tokens.brand, colorText: tokens.ink,
     colorTextSecondary: tokens.muted, colorBgLayout: tokens.canvas, colorBgContainer: tokens.surface,
     colorBorder: '#D7E2EE', colorBorderSecondary: tokens.line, borderRadius: 10,
+    colorBgMask: tokens.mask,
     controlHeight: 40, fontSize: 14,
     fontFamily: '-apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif',
   },
   components: {
     Button: { primaryColor: tokens.brand, primaryShadow: 'none', defaultShadow: 'none', fontWeight: 550 },
-    Table: { headerBg: '#F9FAFD', headerColor: tokens.muted, rowHoverBg: '#F3F8FF', cellFontSize: 13 },
+    Table: { headerBg: '#F9FAFD', headerColor: tokens.muted, headerBorderRadius: 0, headerSplitColor: 'transparent', rowHoverBg: '#F3F8FF', cellFontSize: 13 },
     Modal: { borderRadiusLG: 12 },
     Drawer: { footerPaddingBlock: 20 },
   },

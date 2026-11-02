@@ -25,7 +25,8 @@ export const modeDescriptions: Record<SimulatorMode, string> = {
 };
 // 审计仅映射已知操作；未知值仍按安全文本显示。
 export const auditLabels: Record<string, string> = {
-  ENDPOINT_CREATE: '创建接收端', ENDPOINT_UPDATE: '编辑接收端',
-  ENDPOINT_ENABLE: '启用接收端', ENDPOINT_DISABLE: '停用接收端',
-  SIMULATOR_CONFIG_UPDATE: '保存模拟配置', EVENT_REDELIVER: '手动重投',
+  API_KEY_ROTATED: '轮换业务 API Key',
+  ENDPOINT_CREATED: '创建接收端', ENDPOINT_UPDATED: '编辑接收端',
+  ENDPOINT_ENABLED: '启用接收端', ENDPOINT_DISABLED: '停用接收端',
+  SIMULATOR_CONFIG_UPDATED: '保存模拟配置', EVENT_REDELIVERED: '手动重投',
 };

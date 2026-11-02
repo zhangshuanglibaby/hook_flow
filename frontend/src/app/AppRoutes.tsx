@@ -1,48 +1,71 @@
-// 使用 React Router 的背景位置模式，使列表详情保持独立 URL 与侧面板两种入口。
-import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { lazy, Suspense, useEffect } from 'react';
+import { Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 import type { Location } from 'react-router-dom';
 import { WorkspaceLayout } from '../layouts/WorkspaceLayout';
-import { EventsPage } from '../features/events/EventsPage';
-import { EventDetailPage } from '../features/events/EventDetailPage';
-import { EndpointsPage } from '../features/endpoints/EndpointsPage';
-import { OverviewPage } from '../features/overview/OverviewPage';
-import { SimulatorPage } from '../features/simulator/SimulatorPage';
-import { AuditPage } from '../features/audit/AuditPage';
-import { LoginPage } from '../features/auth/LoginPage';
-import { NotFound } from '../shared/ui';
-// 开发专用状态入口在生产不注册，且不出现在工作台导航中。
-import { StatePreviewPage } from '../dev/StatePreviewPage';
+import { LoadingState, NotFound } from '../shared/ui';
+import { useSession } from '../shared/query';
+import { endSession } from '../shared/api/session';
 
-// 全部页面在静态阶段公开，不设置虚假的登录守卫。
-export function AppRoutes() {
-  // 读取实际地址，浏览器前进后退会自然改变页面或详情面板。
+// 页面按路由懒加载：打开登录页时，不必先下载所有管理页面代码。
+const EventsPage = lazy(() => import('../features/events/EventsPage').then((module) => ({ default: module.EventsPage })));
+const EventDetailPage = lazy(() => import('../features/events/EventDetailPage').then((module) => ({ default: module.EventDetailPage })));
+const EndpointsPage = lazy(() => import('../features/endpoints/EndpointsPage').then((module) => ({ default: module.EndpointsPage })));
+const OverviewPage = lazy(() => import('../features/overview/OverviewPage').then((module) => ({ default: module.OverviewPage })));
+const SimulatorPage = lazy(() => import('../features/simulator/SimulatorPage').then((module) => ({ default: module.SimulatorPage })));
+const AuditPage = lazy(() => import('../features/audit/AuditPage').then((module) => ({ default: module.AuditPage })));
+const LoginPage = lazy(() => import('../features/auth/LoginPage').then((module) => ({ default: module.LoginPage })));
+
+// 受保护页面的统一入口：会话模块已恢复缓存，没有有效会话才去登录页。
+function RequireSession() {
+  const session = useSession();
   const location = useLocation();
-  // state 由列表链接写入；直接打开详情没有背景位置。
+
+  useEffect(() => {
+    if (!session) return;
+    // 服务端给出的 expiresAt 是最终依据，前端定时器只负责及时切换到登录页。
+    const timer = setTimeout(
+      () => endSession(session.generation),
+      Math.max(0, Date.parse(session.expiresAt) - Date.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [session]);
+
+  if (!session || Date.parse(session.expiresAt) <= Date.now()) {
+    // 保存用户原本想去的站内路径，登录成功后再安全返回。
+    return <Navigate to="/login" replace state={{ returnTo: `${location.pathname}${location.search}`, expired: Boolean(session) }} />;
+  }
+  return <Outlet />;
+}
+
+export function AppRoutes() {
+  const session = useSession();
+  const location = useLocation();
   const state = location.state as { background?: Location } | null;
-  // 只允许本站事件列表作为背景，不使用任意外部路径。
-  const background = state?.background?.pathname === '/events' && location.pathname.startsWith('/events/') ? state.background : undefined;
-  // 背景存在时主 Routes 继续显示列表，详情由第二组 Routes 覆盖在侧面板上。
-  return <><Routes location={background ?? location}>
-    {/* 登录页使用独立双栏布局，不显示管理侧栏。 */}
-    <Route path="/login" element={<LoginPage />} />
-    {/* 共用工作台布局包裹其余页面，不检查认证。 */}
-    <Route element={<WorkspaceLayout />}>
-      {/* 默认入口沿用已确认的事件管理，不根据假登录跳转。 */}
-      <Route path="/" element={<Navigate to="/events" replace />} />
-      <Route path="/events" element={<EventsPage />} />
-      {/* 无背景位置时详情独立显示，刷新不依赖前一页数据。 */}
-      <Route path="/events/:eventId" element={<EventDetailPage />} />
-      <Route path="/overview" element={<OverviewPage />} />
-      <Route path="/endpoints" element={<EndpointsPage />} />
-      <Route path="/simulator" element={<SimulatorPage />} />
-      <Route path="/audit-logs" element={<AuditPage />} />
-      {/* 只有开发模式能打开状态画廊，生产会落到 404。 */}
-      {import.meta.env.DEV && <Route path="/__preview/states" element={<StatePreviewPage />} />}
-      {/* 未匹配地址与数据空态分开处理。 */}
-      <Route path="*" element={<NotFound />} />
-    </Route>
-  </Routes>
-    {/* 只在从列表打开详情时挂载 Drawer，URL 依然是可直达详情地址。 */}
-    {background && <Routes><Route path="/events/:eventId" element={<EventDetailPage drawer />} /></Routes>}
-  </>;
+
+  // 从事件列表打开详情时，列表作为背景保留，详情使用 Drawer 展示。
+  // 直接刷新详情 URL 时没有 background，因此会展示独立详情页。
+  const background = session && state?.background?.pathname === '/events' && location.pathname.startsWith('/events/')
+    ? state.background
+    : undefined;
+
+  return <Suspense fallback={<LoadingState />}>
+    <Routes location={background ?? location}>
+      <Route path="/login" element={<LoginPage />} />
+      <Route element={<RequireSession />}>
+        <Route element={<WorkspaceLayout />}>
+          <Route path="/" element={<Navigate to="/events" replace />} />
+          <Route path="/events" element={<EventsPage />} />
+          <Route path="/events/:eventId" element={<EventDetailPage />} />
+          <Route path="/overview" element={<OverviewPage />} />
+          <Route path="/endpoints" element={<EndpointsPage />} />
+          <Route path="/simulator" element={<SimulatorPage />} />
+          <Route path="/audit-logs" element={<AuditPage />} />
+          <Route path="*" element={<NotFound />} />
+        </Route>
+      </Route>
+    </Routes>
+
+    {/* 第二套路由只在存在 background 时渲染 Drawer，不影响浏览器地址。 */}
+    {background && <Routes><Route element={<RequireSession />}><Route path="/events/:eventId" element={<EventDetailPage drawer />} /></Route></Routes>}
+  </Suspense>;
 }
