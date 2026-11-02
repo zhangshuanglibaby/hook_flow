@@ -16,11 +16,11 @@ for (const width of [1440, 768, 375]) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
   });
 }
-test('开发环境默认填写演示账号，不自动发送登录请求', async ({ page }) => {
+test('默认填写公开演示账号，不自动发送登录请求', async ({ page }) => {
   let requests = 0;
   page.on('request', (request) => { if (request.url().endsWith('/auth/login')) requests += 1; });
   await page.goto('/login');
-  await expect(page.getByLabel('账号', { exact: true })).toHaveValue('admin');
+  await expect(page.getByLabel('账号', { exact: true })).toHaveValue('admin123');
   await expect(page.getByLabel('密码', { exact: true })).toHaveValue('123456');
   expect(requests).toBe(0);
 });

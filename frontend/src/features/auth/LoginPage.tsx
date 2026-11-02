@@ -9,10 +9,8 @@ import { ErrorNotice, WarningNotice } from '../../shared/ui';
 import { useSession } from '../../shared/query';
 import { safeReturnTo } from '../../shared/navigation';
 
-// 仅 dev 环境预填本地演示账号；仍须真实后端认证，不是跳过登录。
-const developmentDefaults = import.meta.env.DEV && import.meta.env.VITE_APP_ENV === 'dev'
-  ? { username: 'admin', password: '123456' }
-  : undefined;
+// 公开演示凭证仅用于表单预填；登录仍须通过后端认证。
+const demoDefaults = { username: 'admin123', password: '123456' };
 
 export function LoginPage() {
   // 会话模块已在启动时恢复有效缓存；已登录时直接返回目标页面。
@@ -68,7 +66,7 @@ export function LoginPage() {
     const validationError = textError(value ?? '', max);
     if (validationError || !value.trim()) throw new Error(validationError ?? '不能全部为空白。');
   } });
-  return <div className="login-layout"><section className="login-story" aria-label="HookFlow 事件投递平台介绍" style={{ backgroundImage: `url("${loginBackground}")` }}><p className="sr-only">连接业务系统与 HTTP 接收端，追踪每一轮事件投递。</p></section><section className="login-form-area"><div className="login-form-wrap"><span className="outline-tag">{import.meta.env.VITE_APP_ENV === 'pro' ? '管理工作台' : '开发环境'}</span><h2>登录工作台</h2><p>使用专用管理员账号，进入事件投递工作台。</p>{state?.expired && <WarningNotice message="登录已过期，请重新登录。" />}<ErrorNotice error={error} /><Form form={form} layout="vertical" className="login-form" initialValues={developmentDefaults} onFinish={login} autoComplete="on" disabled={busy}>
+  return <div className="login-layout"><section className="login-story" aria-label="HookFlow 事件投递平台介绍" style={{ backgroundImage: `url("${loginBackground}")` }}><p className="sr-only">连接业务系统与 HTTP 接收端，追踪每一轮事件投递。</p></section><section className="login-form-area"><div className="login-form-wrap"><span className="outline-tag">{import.meta.env.VITE_APP_ENV === 'pro' ? '管理工作台' : '开发环境'}</span><h2>登录工作台</h2><p>使用专用管理员账号，进入事件投递工作台。</p>{state?.expired && <WarningNotice message="登录已过期，请重新登录。" />}<ErrorNotice error={error} /><Form form={form} layout="vertical" className="login-form" initialValues={demoDefaults} onFinish={login} autoComplete="on" disabled={busy}>
     <Form.Item label="账号" name="username" rules={[rule(64)]}><Input autoComplete="username" placeholder="输入管理员账号" /></Form.Item>
     <Form.Item label="密码" name="password" rules={[rule(1024)]}><Input type={visible ? 'text' : 'password'} autoComplete="current-password" placeholder="输入密码" suffix={<Button type="text" size="small" aria-label={visible ? '隐藏密码' : '显示密码'} aria-pressed={visible} onClick={() => setVisible(!visible)}>{visible ? '隐藏' : '显示'}</Button>} /></Form.Item>
     <Button className="login-submit" type="primary" htmlType="submit" loading={busy} block>登录</Button>
